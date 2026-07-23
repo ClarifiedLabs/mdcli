@@ -1,0 +1,411 @@
+package mermaid
+
+// drawMarkerV draws an edge-end decoration on a vertical approach.
+// dir is 'u' (pointing up, into the node above) or 'd' (pointing down).
+func drawMarkerV(c *canvas, x, y int, m marker, dir byte) {
+	var ch rune
+	switch m {
+	case mArrow, mTriangle:
+		ch = 'v'
+		if dir == 'u' {
+			ch = '^'
+		}
+	case mDiamondFilled:
+		ch = '*'
+	case mDiamondOpen, mCircle:
+		ch = 'o'
+	case mCross:
+		ch = 'x'
+	default:
+		return
+	}
+	c.put(x, y, ch)
+}
+
+// drawMarkerH draws an edge-end decoration on a horizontal approach.
+// dir is 'l' (pointing left) or 'r' (pointing right). x is the cell
+// adjacent to the node border.
+func drawMarkerH(c *canvas, x, y int, m marker, dir byte) {
+	switch m {
+	case mArrow:
+		if dir == 'l' {
+			c.put(x, y, '<')
+		} else {
+			c.put(x, y, '>')
+		}
+	case mTriangle:
+		if dir == 'l' {
+			c.text(x, y, "<|")
+		} else {
+			c.text(x-1, y, "|>")
+		}
+	case mDiamondFilled:
+		c.put(x, y, '*')
+	case mDiamondOpen, mCircle:
+		c.put(x, y, 'o')
+	case mCross:
+		c.put(x, y, 'x')
+	}
+}
+
+type labelDraw struct {
+	cx, y int // cx is the horizontal center of the label
+	text  string
+}
+
+func drawLabels(c *canvas, labels []labelDraw) {
+	for _, l := range labels {
+		c.text(l.cx-dispWidth(l.text)/2, l.y, l.text)
+	}
+}
+
+// jogLabel places an edge label on a horizontal jog between x1 and x2 at row
+// y: centered when it fits between the corners, otherwise to the right of
+// the jog.
+func jogLabel(x1, x2, y int, label string) labelDraw {
+	lo, hi := x1, x2
+	if lo > hi {
+		lo, hi = hi, lo
+	}
+	text := " " + label + " "
+	tl := dispWidth(text)
+	if tl <= hi-lo-1 {
+		start := (lo+hi)/2 - tl/2
+		if start < lo+1 {
+			start = lo + 1
+		}
+		if start+tl > hi {
+			start = hi - tl
+		}
+		return labelDraw{start + tl/2, y, text}
+	}
+	return labelDraw{hi + 2 + dispWidth(label)/2, y, label}
+}
+
+type markerDraw struct {
+	x, y int
+	m    marker
+	dir  byte
+}
+
+// drawVertical renders a TD/BT layout.
+func (g *graph) drawVertical(ranks [][]*gnode) string {
+	segs := g.segments()
+	// side labels of parallel edges extend left of their line; shift the
+	// whole drawing right if one would fall off the canvas
+	minX := 0
+	for _, s := range segs {
+		if s.labelHere && s.off < 0 && s.u.cross == s.w.cross {
+			if start := s.u.cross + s.off - 1 - dispWidth(s.e.label); start < minX {
+				minX = start
+			}
+		}
+	}
+	if minX < 0 {
+		for _, n := range g.nodes {
+			n.cross -= minX
+		}
+	}
+	nGaps := len(ranks) - 1
+	tracks := make([]int, nGaps+1)
+	trackIdx := map[*gseg]int{}
+	for _, s := range segs {
+		if s.e.line == lineNone {
+			continue
+		}
+		gi := s.u.rank
+		if s.w.rank < gi {
+			gi = s.w.rank
+		}
+		if s.u.cross != s.w.cross || s.labelHere {
+			trackIdx[s] = tracks[gi]
+			tracks[gi]++
+		}
+	}
+	rowH := make([]int, len(ranks))
+	for ri, row := range ranks {
+		for _, n := range row {
+			if n.h > rowH[ri] {
+				rowH[ri] = n.h
+			}
+		}
+	}
+	gapH := make([]int, nGaps+1)
+	for gi := 0; gi < nGaps; gi++ {
+		gapH[gi] = tracks[gi] + 2
+		if gapH[gi] < 2 {
+			gapH[gi] = 2
+		}
+	}
+	rowY := make([]int, len(ranks))
+	y := 0
+	for ri := range ranks {
+		rowY[ri] = y
+		y += rowH[ri]
+		if ri < nGaps {
+			y += gapH[ri]
+		}
+	}
+
+	c := &canvas{}
+	for ri, row := range ranks {
+		for _, n := range row {
+			if n.virtual {
+				if n.vchar != ' ' {
+					c.vline(rowY[ri], rowY[ri]+rowH[ri]-1, n.cross, n.vchar)
+				}
+				continue
+			}
+			n.x = n.cross - n.w/2
+			n.y = rowY[ri]
+			drawNode(c, n)
+		}
+	}
+
+	var labels []labelDraw
+	var markers []markerDraw
+	for _, s := range segs {
+		if s.e.line == lineNone {
+			continue
+		}
+		top, bot := s.u, s.w
+		if top.rank > bot.rank {
+			top, bot = bot, top
+		}
+		gi := top.rank
+		hch, vch := lineChars(s.e.line)
+		gapStart := rowY[gi] + rowH[gi]
+		gapEnd := gapStart + gapH[gi] - 1
+		xt, xb := top.cross, bot.cross
+		if xt == xb {
+			// parallel straight edges are offset into side-by-side lines;
+			// jogged parallels are already separated by their tracks
+			xt += s.off
+			xb += s.off
+		}
+		ytop := gapStart
+		if !top.virtual {
+			ytop = top.y + top.h
+		}
+		if ti, hasTrack := trackIdx[s]; hasTrack {
+			ty := gapStart + 1 + ti
+			c.vline(ytop, ty, xt, vch)
+			if xt != xb {
+				c.hline(xt, xb, ty, hch)
+				c.put(xt, ty, '+')
+				c.put(xb, ty, '+')
+			}
+			c.vline(ty, gapEnd, xb, vch)
+			if s.labelHere {
+				l := dispWidth(s.e.label)
+				switch {
+				case xt != xb:
+					labels = append(labels, jogLabel(xt, xb, ty, s.e.label))
+				case s.parallel && s.off < 0: // label beside the line
+					labels = append(labels, labelDraw{xt - 1 - l + l/2, ty, s.e.label})
+				case s.parallel:
+					labels = append(labels, labelDraw{xt + 2 + l/2, ty, s.e.label})
+				default:
+					labels = append(labels, labelDraw{xt, ty, " " + s.e.label + " "})
+				}
+			}
+		} else {
+			c.vline(ytop, gapEnd, xt, vch)
+		}
+		if s.last && !s.w.virtual {
+			if s.w == bot {
+				markers = append(markers, markerDraw{xb, gapEnd, s.e.em, 'd'})
+			} else {
+				markers = append(markers, markerDraw{xt, ytop, s.e.em, 'u'})
+			}
+		}
+		if s.first && !s.u.virtual {
+			if s.u == top {
+				markers = append(markers, markerDraw{xt, ytop, s.e.sm, 'u'})
+			} else {
+				markers = append(markers, markerDraw{xb, gapEnd, s.e.sm, 'd'})
+			}
+		}
+	}
+	g.drawSelfLoops(c, &labels)
+	drawLabels(c, labels)
+	for _, m := range markers {
+		drawMarkerV(c, m.x, m.y, m.m, m.dir)
+	}
+	return c.String()
+}
+
+// drawSelfLoops draws a small loop on the east side of each self-edge's node.
+func (g *graph) drawSelfLoops(c *canvas, labels *[]labelDraw) {
+	for _, e := range g.edges {
+		if !e.self || e.line == lineNone {
+			continue
+		}
+		n := e.from
+		x2 := n.x + n.w
+		m := n.y + n.h/2
+		c.text(x2, m, "--.")
+		c.text(x2, m+1, "<-'")
+		if e.label != "" {
+			*labels = append(*labels, labelDraw{x2 + 4 + dispWidth(e.label)/2, m, e.label})
+		}
+	}
+}
+
+// drawHorizontal renders an LR/RL layout.
+func (g *graph) drawHorizontal(ranks [][]*gnode) string {
+	segs := g.segments()
+	nGaps := len(ranks) - 1
+	tracks := make([]int, nGaps+1)
+	labelNeed := make([]int, nGaps+1)
+	trackIdx := map[*gseg]int{}
+	for _, s := range segs {
+		if s.e.line == lineNone {
+			continue
+		}
+		gi := s.u.rank
+		if s.w.rank < gi {
+			gi = s.w.rank
+		}
+		if s.u.cross != s.w.cross {
+			trackIdx[s] = tracks[gi]
+			tracks[gi]++
+		}
+		if s.labelHere {
+			if need := dispWidth(s.e.label) + 4; need > labelNeed[gi] {
+				labelNeed[gi] = need
+			}
+		}
+	}
+	colW := make([]int, len(ranks))
+	for ri, row := range ranks {
+		for _, n := range row {
+			if n.w > colW[ri] {
+				colW[ri] = n.w
+			}
+		}
+	}
+	gapW := make([]int, nGaps+1)
+	for gi := 0; gi < nGaps; gi++ {
+		extra := labelNeed[gi]
+		if extra < 2 {
+			extra = 2
+		}
+		gapW[gi] = tracks[gi] + extra
+		if gapW[gi] < 4 {
+			gapW[gi] = 4
+		}
+	}
+	colX := make([]int, len(ranks))
+	x := 0
+	for ri := range ranks {
+		colX[ri] = x
+		x += colW[ri]
+		if ri < nGaps {
+			x += gapW[ri]
+		}
+	}
+
+	c := &canvas{}
+	for ri, row := range ranks {
+		for _, n := range row {
+			if n.virtual {
+				if n.vchar != ' ' {
+					c.hline(colX[ri], colX[ri]+colW[ri]-1, n.cross, horizOf(n.vchar))
+				}
+				continue
+			}
+			n.x = colX[ri]
+			n.y = n.cross - n.h/2
+			drawNode(c, n)
+		}
+	}
+
+	var labels []labelDraw
+	var markers []markerDraw
+	for _, s := range segs {
+		if s.e.line == lineNone {
+			continue
+		}
+		lt, rt := s.u, s.w
+		if lt.rank > rt.rank {
+			lt, rt = rt, lt
+		}
+		gi := lt.rank
+		hch, vch := lineChars(s.e.line)
+		gapStart := colX[gi] + colW[gi]
+		gapEnd := gapStart + gapW[gi] - 1
+		yl, yr := lt.cross, rt.cross
+		if yl == yr {
+			yl += s.off
+			yr += s.off
+		}
+		xleft := gapStart
+		if !lt.virtual {
+			xleft = lt.x + lt.w
+		}
+		if ti, hasTrack := trackIdx[s]; hasTrack {
+			tx := gapStart + 1 + ti
+			c.hline(xleft, tx, yl, hch)
+			c.vline(yl, yr, tx, vch)
+			c.put(tx, yl, '+')
+			c.put(tx, yr, '+')
+			c.hline(tx, gapEnd, yr, hch)
+			if s.labelHere {
+				labels = append(labels, jogLabel(tx, gapEnd+1, yr, s.e.label))
+			}
+		} else {
+			c.hline(xleft, gapEnd, yl, hch)
+			if s.labelHere {
+				labels = append(labels, jogLabel(xleft-1, gapEnd+1, yl, s.e.label))
+			}
+		}
+		if s.last && !s.w.virtual {
+			if s.w == rt {
+				markers = append(markers, markerDraw{gapEnd, yr, s.e.em, 'r'})
+			} else {
+				markers = append(markers, markerDraw{xleft, yl, s.e.em, 'l'})
+			}
+		}
+		if s.first && !s.u.virtual {
+			if s.u == lt {
+				markers = append(markers, markerDraw{xleft, yl, s.e.sm, 'l'})
+			} else {
+				markers = append(markers, markerDraw{gapEnd, yr, s.e.sm, 'r'})
+			}
+		}
+	}
+	// self loops: small loop under the node
+	for _, e := range g.edges {
+		if !e.self || e.line == lineNone {
+			continue
+		}
+		n := e.from
+		cx := n.x + n.w/2
+		r1 := n.y + n.h
+		c.put(cx-1, r1, '^')
+		c.put(cx+1, r1, '|')
+		c.put(cx-1, r1+1, '\'')
+		c.put(cx, r1+1, '-')
+		c.put(cx+1, r1+1, '\'')
+		if e.label != "" {
+			labels = append(labels, labelDraw{cx + 4 + dispWidth(e.label)/2, r1, e.label})
+		}
+	}
+	drawLabels(c, labels)
+	for _, m := range markers {
+		drawMarkerH(c, m.x, m.y, m.m, m.dir)
+	}
+	return c.String()
+}
+
+// horizOf maps a vertical line character to its horizontal counterpart.
+func horizOf(v rune) rune {
+	switch v {
+	case ':':
+		return '.'
+	case '#':
+		return '='
+	}
+	return '-'
+}

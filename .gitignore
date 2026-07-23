@@ -1,0 +1,11 @@
+# Binaries
+/md
+*.exe
+*.test
+*.out
+
+# Release artifacts
+/dist
+
+# OS
+.DS_Store
