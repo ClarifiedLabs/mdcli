@@ -64,22 +64,22 @@ brew install md
 ```
 
 <!-- release-artifacts:start -->
-Or download the latest release, v0.0.1, directly:
+Or download the latest release, v0.0.2, directly:
 
-- Apple silicon (arm64): [signed `.pkg`](https://github.com/ClarifiedLabs/mdcli/releases/download/v0.0.1/md_v0.0.1_darwin_arm64.pkg) · [`.tar.gz`](https://github.com/ClarifiedLabs/mdcli/releases/download/v0.0.1/md_v0.0.1_darwin_arm64.tar.gz)
-- Intel (amd64): [`.tar.gz`](https://github.com/ClarifiedLabs/mdcli/releases/download/v0.0.1/md_v0.0.1_darwin_amd64.tar.gz)
+- Apple silicon (arm64): [signed `.pkg`](https://github.com/ClarifiedLabs/mdcli/releases/download/v0.0.2/md_v0.0.2_darwin_arm64.pkg) · [`.tar.gz`](https://github.com/ClarifiedLabs/mdcli/releases/download/v0.0.2/md_v0.0.2_darwin_arm64.tar.gz)
+- Intel (amd64): [`.tar.gz`](https://github.com/ClarifiedLabs/mdcli/releases/download/v0.0.2/md_v0.0.2_darwin_amd64.tar.gz)
 
 ### Linux
 
-v0.0.1 is available for amd64/x86_64 and arm64/aarch64:
+v0.0.2 is available for amd64/x86_64 and arm64/aarch64:
 
 | Format | amd64 / x86_64 | arm64 / aarch64 |
 |---|---|---|
-| Package | [`.deb`](https://github.com/ClarifiedLabs/mdcli/releases/download/v0.0.1/md_0.0.1_amd64.deb) · [`.rpm`](https://github.com/ClarifiedLabs/mdcli/releases/download/v0.0.1/md-0.0.1-1.x86_64.rpm) | [`.deb`](https://github.com/ClarifiedLabs/mdcli/releases/download/v0.0.1/md_0.0.1_arm64.deb) · [`.rpm`](https://github.com/ClarifiedLabs/mdcli/releases/download/v0.0.1/md-0.0.1-1.aarch64.rpm) |
-| Tarball | [`.tar.gz`](https://github.com/ClarifiedLabs/mdcli/releases/download/v0.0.1/md_v0.0.1_linux_amd64.tar.gz) | [`.tar.gz`](https://github.com/ClarifiedLabs/mdcli/releases/download/v0.0.1/md_v0.0.1_linux_arm64.tar.gz) |
+| Package | [`.deb`](https://github.com/ClarifiedLabs/mdcli/releases/download/v0.0.2/md_0.0.2_amd64.deb) · [`.rpm`](https://github.com/ClarifiedLabs/mdcli/releases/download/v0.0.2/md-0.0.2-1.x86_64.rpm) | [`.deb`](https://github.com/ClarifiedLabs/mdcli/releases/download/v0.0.2/md_0.0.2_arm64.deb) · [`.rpm`](https://github.com/ClarifiedLabs/mdcli/releases/download/v0.0.2/md-0.0.2-1.aarch64.rpm) |
+| Tarball | [`.tar.gz`](https://github.com/ClarifiedLabs/mdcli/releases/download/v0.0.2/md_v0.0.2_linux_amd64.tar.gz) | [`.tar.gz`](https://github.com/ClarifiedLabs/mdcli/releases/download/v0.0.2/md_v0.0.2_linux_arm64.tar.gz) |
 
 Every asset is listed with its SHA-256 in
-[`checksums.txt`](https://github.com/ClarifiedLabs/mdcli/releases/download/v0.0.1/checksums.txt).
+[`checksums.txt`](https://github.com/ClarifiedLabs/mdcli/releases/download/v0.0.2/checksums.txt).
 <!-- release-artifacts:end -->
 
 ### From source
