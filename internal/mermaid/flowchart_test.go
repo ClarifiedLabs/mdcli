@@ -264,6 +264,111 @@ func TestRenderFlowchartLR(t *testing.T) {
 	}
 }
 
+func TestRenderFlowchartSharedTracks(t *testing.T) {
+	tests := []struct {
+		name, src, want string
+	}{
+		{
+			name: "left to right",
+			src: `flowchart LR
+  A --> Hub
+  B --> Hub
+  C --> Hub
+  Hub --> X
+  Hub --> Y
+  Hub --> Z`,
+			want: strings.Join([]string{
+				"                    +---+",
+				"                 +->| X |",
+				"                 |  +---+",
+				"                 |",
+				"                 |",
+				"+---+    +-----+ |  +---+",
+				"| A |-+->| Hub |-+->| Y |",
+				"+---+ |  +-----+ |  +---+",
+				"      |          |",
+				"      |          |",
+				"+---+ |          |  +---+",
+				"| B |-+          +->| Z |",
+				"+---+ |             +---+",
+				"      |",
+				"      |",
+				"+---+ |",
+				"| C |-+",
+				"+---+",
+				"",
+			}, "\n"),
+		},
+		{
+			name: "top down",
+			src: `flowchart TD
+  A --> Hub
+  B --> Hub
+  C --> Hub
+  Hub --> X
+  Hub --> Y
+  Hub --> Z`,
+			want: strings.Join([]string{
+				"          +---+     +---+     +---+",
+				"          | A |     | B |     | C |",
+				"          +---+     +---+     +---+",
+				"            |         |         |",
+				"            +---------+---------+",
+				"            v",
+				"         +-----+",
+				"         | Hub |",
+				"         +-----+",
+				"            |",
+				"  +---------+---------+",
+				"  v         v         v",
+				"+---+     +---+     +---+",
+				"| X |     | Y |     | Z |",
+				"+---+     +---+     +---+",
+				"",
+			}, "\n"),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := mustRender(t, tt.src); got != tt.want {
+				t.Errorf("got:\n%s\nwant:\n%s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRouteTracksKeepDestinationsSeparate(t *testing.T) {
+	a := &gnode{id: "a", rank: 0, cross: 0}
+	b := &gnode{id: "b", rank: 0, cross: 10}
+	c := &gnode{id: "c", rank: 0, cross: 20}
+	d := &gnode{id: "d", rank: 0, cross: 30}
+	x := &gnode{id: "x", rank: 1, cross: 5}
+	y := &gnode{id: "y", rank: 1, cross: 25}
+
+	var segs []*gseg
+	for _, ends := range [][2]*gnode{{a, x}, {b, x}, {c, y}, {d, y}} {
+		e := &gedge{from: ends[0], to: ends[1], line: lineSolid, em: mArrow}
+		segs = append(segs, &gseg{
+			u: ends[0], w: ends[1], e: e, first: true, last: true,
+		})
+	}
+	idx, tracks := assignRouteTracks(segs, 1, func(s *gseg) bool {
+		return s.u.cross != s.w.cross
+	})
+	if tracks[0] != 2 {
+		t.Fatalf("allocated %d tracks, want one for each destination", tracks[0])
+	}
+	if idx[segs[0]] != idx[segs[1]] {
+		t.Error("edges into x did not share a track")
+	}
+	if idx[segs[2]] != idx[segs[3]] {
+		t.Error("edges into y did not share a track")
+	}
+	if idx[segs[0]] == idx[segs[2]] {
+		t.Error("independent destinations shared a track")
+	}
+}
+
 func TestRenderFlowchartBranchAndCycle(t *testing.T) {
 	got := mustRender(t, "flowchart TD\n  A[Start] --> B{OK?}\n  B -->|yes| C[Done]\n  B -->|no| A")
 	want := strings.Join([]string{

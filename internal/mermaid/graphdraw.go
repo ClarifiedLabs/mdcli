@@ -88,6 +88,110 @@ type markerDraw struct {
 	dir  byte
 }
 
+// routeBundle identifies edge segments that can share a routing track. Edges
+// may only join a bundle at the same end of the same real node; keeping the
+// endpoint side in the key prevents an incoming and outgoing edge from being
+// joined merely because they touch the same node.
+type routeBundle struct {
+	gap      int
+	endpoint *gnode
+	first    bool
+	line     lineKind
+	marker   marker
+}
+
+// assignRouteTracks allocates cross-axis tracks to segments that need a jog.
+// Compatible fan-in and fan-out segments reuse one track, producing a single
+// trunk with branches instead of a row of adjacent parallel lines.
+func assignRouteTracks(segs []*gseg, nGaps int, needsTrack func(*gseg) bool) (map[*gseg]int, []int) {
+	tracks := make([]int, nGaps+1)
+	trackIdx := map[*gseg]int{}
+
+	gapOf := func(s *gseg) int {
+		gi := s.u.rank
+		if s.w.rank < gi {
+			gi = s.w.rank
+		}
+		return gi
+	}
+	firstKey := func(s *gseg) routeBundle {
+		return routeBundle{
+			gap: gapOf(s), endpoint: s.u, first: true,
+			line: s.e.line, marker: s.e.sm,
+		}
+	}
+	lastKey := func(s *gseg) routeBundle {
+		return routeBundle{
+			gap: gapOf(s), endpoint: s.w, first: false,
+			line: s.e.line, marker: s.e.em,
+		}
+	}
+	eligible := func(s *gseg) bool {
+		// Labels need their own track, and parallel edges between the same
+		// nodes intentionally remain visually distinct.
+		return needsTrack(s) && s.e.line != lineNone && s.e.label == "" && !s.parallel
+	}
+
+	// Count both possible bundles first. A one-segment edge can participate in
+	// either its source fan-out or its destination fan-in, so it chooses the
+	// larger group below rather than accidentally connecting both groups.
+	candidates := map[routeBundle]int{}
+	for _, s := range segs {
+		if !eligible(s) {
+			continue
+		}
+		if s.first {
+			candidates[firstKey(s)]++
+		}
+		if s.last {
+			candidates[lastKey(s)]++
+		}
+	}
+
+	selected := map[*gseg]routeBundle{}
+	selectedCount := map[routeBundle]int{}
+	for _, s := range segs {
+		if !eligible(s) {
+			continue
+		}
+		var key routeBundle
+		switch {
+		case s.first && s.last:
+			fk, lk := firstKey(s), lastKey(s)
+			key = fk
+			if candidates[lk] > candidates[fk] {
+				key = lk
+			}
+		case s.first:
+			key = firstKey(s)
+		case s.last:
+			key = lastKey(s)
+		default:
+			continue
+		}
+		selected[s] = key
+		selectedCount[key]++
+	}
+
+	bundleTrack := map[routeBundle]int{}
+	for _, s := range segs {
+		if s.e.line == lineNone || !needsTrack(s) {
+			continue
+		}
+		gi := gapOf(s)
+		if key, ok := selected[s]; ok && selectedCount[key] > 1 {
+			if ti, exists := bundleTrack[key]; exists {
+				trackIdx[s] = ti
+				continue
+			}
+			bundleTrack[key] = tracks[gi]
+		}
+		trackIdx[s] = tracks[gi]
+		tracks[gi]++
+	}
+	return trackIdx, tracks
+}
+
 // drawVertical renders a TD/BT layout.
 func (g *graph) drawVertical(ranks [][]*gnode) string {
 	segs := g.segments()
@@ -107,21 +211,9 @@ func (g *graph) drawVertical(ranks [][]*gnode) string {
 		}
 	}
 	nGaps := len(ranks) - 1
-	tracks := make([]int, nGaps+1)
-	trackIdx := map[*gseg]int{}
-	for _, s := range segs {
-		if s.e.line == lineNone {
-			continue
-		}
-		gi := s.u.rank
-		if s.w.rank < gi {
-			gi = s.w.rank
-		}
-		if s.u.cross != s.w.cross || s.labelHere {
-			trackIdx[s] = tracks[gi]
-			tracks[gi]++
-		}
-	}
+	trackIdx, tracks := assignRouteTracks(segs, nGaps, func(s *gseg) bool {
+		return s.u.cross != s.w.cross || s.labelHere
+	})
 	rowH := make([]int, len(ranks))
 	for ri, row := range ranks {
 		for _, n := range row {
@@ -256,9 +348,10 @@ func (g *graph) drawSelfLoops(c *canvas, labels *[]labelDraw) {
 func (g *graph) drawHorizontal(ranks [][]*gnode) string {
 	segs := g.segments()
 	nGaps := len(ranks) - 1
-	tracks := make([]int, nGaps+1)
+	trackIdx, tracks := assignRouteTracks(segs, nGaps, func(s *gseg) bool {
+		return s.u.cross != s.w.cross
+	})
 	labelNeed := make([]int, nGaps+1)
-	trackIdx := map[*gseg]int{}
 	for _, s := range segs {
 		if s.e.line == lineNone {
 			continue
@@ -266,10 +359,6 @@ func (g *graph) drawHorizontal(ranks [][]*gnode) string {
 		gi := s.u.rank
 		if s.w.rank < gi {
 			gi = s.w.rank
-		}
-		if s.u.cross != s.w.cross {
-			trackIdx[s] = tracks[gi]
-			tracks[gi]++
 		}
 		if s.labelHere {
 			if need := dispWidth(s.e.label) + 4; need > labelNeed[gi] {
