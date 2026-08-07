@@ -1,15 +1,13 @@
 package highlight
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // Languages whose structure is carried by line shape rather than by tokens get
 // their own small lexer instead of the generic scanner. Each may still delegate
 // to the scanner for the parts that are ordinary code.
-
-const (
-	styleAdded   = "\x1b[32m"
-	styleRemoved = "\x1b[31m"
-)
 
 func init() {
 	languages["diff"] = &Language{lex: lexDiff}
@@ -57,25 +55,130 @@ func init() {
 	}()
 }
 
-// lexDiff colors unified diffs by line prefix. Header lines are checked before
-// the bare +/- cases so "+++" and "---" are not mistaken for content.
-func lexDiff(_ *State, line string) string {
+// lexDiff colors unified diffs by line prefix. Its phase state distinguishes
+// file headers from body lines whose source happens to begin with ++ or --.
+func lexDiff(s *State, line string) string {
+	if style, _ := s.diffHeaders.headerStyle(line, s.palette); style != "" {
+		return styled(style, line)
+	}
 	switch {
-	case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"):
-		return styled(styleBuiltin, line)
+	case strings.HasPrefix(line, "+"):
+		s.diffHeaders.markContent('+')
+		return styled(s.palette.added, line)
+	case strings.HasPrefix(line, "-"):
+		s.diffHeaders.markContent('-')
+		return styled(s.palette.removed, line)
+	case strings.HasPrefix(line, " "):
+		s.diffHeaders.markContent(' ')
+	}
+	return line
+}
+
+// diffLineState tracks whether a unified diff has reached file content. Once it
+// has, +++ and --- are body lines rather than file headers. Hunk counts return
+// the state to header mode between hunks or files; a git preamble also resets it.
+// DiffState shares this classification with fenced diffs.
+type diffLineState struct {
+	content      bool
+	countedHunk  bool
+	oldRemaining int
+	newRemaining int
+}
+
+func (s *diffLineState) markContent(prefix byte) {
+	s.content = true
+	if !s.countedHunk {
+		return
+	}
+	switch prefix {
+	case ' ':
+		if s.oldRemaining > 0 {
+			s.oldRemaining--
+		}
+		if s.newRemaining > 0 {
+			s.newRemaining--
+		}
+	case '-':
+		if s.oldRemaining > 0 {
+			s.oldRemaining--
+		}
+	case '+':
+		if s.newRemaining > 0 {
+			s.newRemaining--
+		}
+	}
+	if s.oldRemaining == 0 && s.newRemaining == 0 {
+		s.content = false
+		s.countedHunk = false
+	}
+}
+
+// headerStyle returns the whole-line style for a unified-diff header or git
+// metadata line, plus whether line begins a new file. It returns an empty style
+// when line is diff content.
+func (s *diffLineState) headerStyle(line string, p palette) (style string, fileStart bool) {
+	switch {
+	case strings.HasPrefix(line, "diff "):
+		*s = diffLineState{}
+		return p.comment, true
 	case strings.HasPrefix(line, "@@"):
-		return styled(styleKeyword, line)
-	case strings.HasPrefix(line, "diff "), strings.HasPrefix(line, "index "),
+		s.content = true
+		s.countedHunk = false
+		s.oldRemaining, s.newRemaining = 0, 0
+		if oldCount, newCount, ok := diffHunkCounts(line); ok {
+			s.oldRemaining, s.newRemaining = oldCount, newCount
+			s.countedHunk = true
+			if oldCount == 0 && newCount == 0 {
+				s.content = false
+			}
+		}
+		return p.keyword, false
+	case !s.content && diffFileHeader(line, "---"):
+		return p.builtin, true
+	case !s.content && diffFileHeader(line, "+++"):
+		s.content = true
+		return p.builtin, false
+	case strings.HasPrefix(line, "index "),
 		strings.HasPrefix(line, "new file"), strings.HasPrefix(line, "deleted file"),
 		strings.HasPrefix(line, "old mode"), strings.HasPrefix(line, "new mode"),
 		strings.HasPrefix(line, "similarity "), strings.HasPrefix(line, "rename "):
-		return styled(styleComment, line)
-	case strings.HasPrefix(line, "+"):
-		return styled(styleAdded, line)
-	case strings.HasPrefix(line, "-"):
-		return styled(styleRemoved, line)
+		return p.comment, false
 	}
-	return line
+	return "", false
+}
+
+func diffFileHeader(line, marker string) bool {
+	return strings.HasPrefix(line, marker+" ") || strings.HasPrefix(line, marker+"\t")
+}
+
+func diffHunkCounts(line string) (oldCount, newCount int, ok bool) {
+	fields := strings.Fields(line)
+	if len(fields) < 4 || fields[0] != "@@" {
+		return 0, 0, false
+	}
+	oldCount, oldOK := diffRangeCount(fields[1], '-')
+	newCount, newOK := diffRangeCount(fields[2], '+')
+	return oldCount, newCount, oldOK && newOK
+}
+
+func diffRangeCount(field string, sign byte) (int, bool) {
+	if len(field) < 2 || field[0] != sign {
+		return 0, false
+	}
+	rangeText := field[1:]
+	startText, countText, hasCount := strings.Cut(rangeText, ",")
+	start, err := strconv.Atoi(startText)
+	if err != nil || start < 0 {
+		return 0, false
+	}
+	if !hasCount {
+		return 1, true
+	}
+	count, err := strconv.Atoi(countText)
+	if err != nil || count < 0 {
+		return 0, false
+	}
+	return count, true
 }
 
 // lexYAML colors mapping keys distinctly and hands the value to the scanner.
@@ -92,7 +195,7 @@ func lexYAML(s *State, line string) string {
 
 	rest := line[i:]
 	if k := yamlKeyEnd(rest); k > 0 {
-		span(&b, styleBuiltin, rest[:k])
+		span(&b, s.palette.builtin, rest[:k])
 		b.WriteByte(':')
 		b.WriteString(s.scan(rest[k+1:]))
 		return b.String()
@@ -121,7 +224,7 @@ func yamlKeyEnd(s string) int {
 func lexTOML(s *State, line string) string {
 	trimmed := strings.TrimSpace(line)
 	if s.mode == modeNormal && strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
-		return styled(styleKeyword, line)
+		return styled(s.palette.keyword, line)
 	}
 	return s.scan(line)
 }
@@ -141,16 +244,16 @@ func lexHTML(s *State, line string) string {
 		if strings.HasPrefix(line[i:], "<!--") {
 			end, ok := closes(line, i+len("<!--"), "-->")
 			if !ok {
-				span(&b, styleComment, line[i:])
+				span(&b, s.palette.comment, line[i:])
 				s.suspend(modeComment, "-->")
 				return b.String()
 			}
-			span(&b, styleComment, line[i:end])
+			span(&b, s.palette.comment, line[i:end])
 			i = end
 			continue
 		}
 		if line[i] == '<' && i+1 < len(line) && isTagStart(line[i+1]) {
-			i = htmlTag(&b, line, i)
+			i = htmlTag(&b, line, i, s.palette)
 			continue
 		}
 		b.WriteByte(line[i])
@@ -164,7 +267,7 @@ func isTagStart(c byte) bool {
 }
 
 // htmlTag styles the tag opening at line[i] and returns the offset past it.
-func htmlTag(b *strings.Builder, line string, i int) int {
+func htmlTag(b *strings.Builder, line string, i int, p palette) int {
 	b.WriteByte('<')
 	j := i + 1
 	if line[j] == '/' || line[j] == '!' || line[j] == '?' {
@@ -175,7 +278,7 @@ func htmlTag(b *strings.Builder, line string, i int) int {
 	for j < len(line) && isNameByte(line[j]) {
 		j++
 	}
-	span(b, styleKeyword, line[name:j])
+	span(b, p.keyword, line[name:j])
 
 	for j < len(line) && line[j] != '>' {
 		switch c := line[j]; {
@@ -184,14 +287,14 @@ func htmlTag(b *strings.Builder, line string, i int) int {
 			if !ok {
 				end = len(line)
 			}
-			span(b, styleString, line[j:end])
+			span(b, p.string, line[j:end])
 			j = end
 		case isLetter(c) || c == '_':
 			k := j
 			for k < len(line) && isNameByte(line[k]) {
 				k++
 			}
-			span(b, styleBuiltin, line[j:k])
+			span(b, p.builtin, line[j:k])
 			j = k
 		default:
 			b.WriteByte(c)

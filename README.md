@@ -36,7 +36,7 @@ This is bold, italic, and inline code. See the docs.
 
 - Terminal Markdown rendering: headings, **bold**, *italic*, `inline code`,
   links, raw URLs, lists, and aligned tables.
-- Simple word wrapping to the terminal width (or an explicit `-w`).
+- Responsive table layout and word wrapping to the terminal width (or an explicit `-w`): tables wrap cells to fit and fall back to a stacked `Label: value` view on very narrow terminals.
 - Syntax highlighting for tagged code fences in around two dozen languages —
   Go, Rust, C, C++, Java, Kotlin, Swift, C#, JavaScript, TypeScript, PHP,
   Python, Ruby, shell, SQL, Lua, JSON, YAML, TOML, HTML, CSS, Dockerfile,
@@ -48,7 +48,7 @@ This is bold, italic, and inline code. See the docs.
   - **State diagrams** (`stateDiagram` / `stateDiagram-v2`)
   - **Class diagrams** (`classDiagram`)
 - Unrenderable diagrams fall back to a plain code fence instead of failing.
-- Automatic color detection (TTY-aware) with `-color auto|always|never`.
+- Automatic color detection (TTY-aware) with `-color auto|always|never` and `-theme dark|light|auto` (true-color dark/light palettes; `auto` inspects `MDCLI_THEME`, `COLORFGBG`, `TERM_BACKGROUND`).
 - Interactive paging through `less` (or your `$PAGER`), with `-p auto|always|never`.
 - Reads files or standard input.
 
@@ -100,6 +100,7 @@ With no file arguments, Markdown is read from standard input.
 Flags:
   -w, -width int    wrap width in columns (0 = auto)
   -color string     color output: auto, always, or never (default "auto")
+  -theme string     syntax theme: dark, light, or auto (default "dark")
   -p, -pager string page output through a pager: auto, always, or never (default "auto")
   -version          print version information and exit
   -h, -help         show this help

@@ -3,6 +3,9 @@ package markdown
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
+
+	"github.com/ClarifiedLabs/mdcli/internal/highlight"
 )
 
 func TestRenderDisabledReturnsRawText(t *testing.T) {
@@ -88,6 +91,21 @@ func TestRenderWrapsSpansAcrossLineBreaks(t *testing.T) {
 	}
 }
 
+// ANSI escapes separated from their visible content by span padding must not
+// become zero-width "words" that introduce spaces absent from plain rendering.
+func TestRenderWrapIgnoresANSIOnlyFields(t *testing.T) {
+	for _, input := range []string{
+		"start ` code ` end words",
+		"start `` end words",
+	} {
+		plain := Render(input, Options{Enabled: true, Width: 12})
+		colored := Render(input, Options{Enabled: true, ANSI: true, Width: 12})
+		if got := stripANSI(colored); got != plain {
+			t.Errorf("colored padded span stripped =\n%q\nplain =\n%q\nfor input %q", got, plain, input)
+		}
+	}
+}
+
 // The continuation indent belongs to the list, not to the span being carried
 // over the break, so styling closes before the newline and reopens past the
 // indent instead of running through it.
@@ -117,6 +135,7 @@ func TestWrappedOutputStripsToPlainAtEveryWidth(t *testing.T) {
 		"Alpha **beta gamma delta** epsilon zeta eta theta",
 		"Read the *manual at https://example.com/docs today* please",
 		"Use `some inline code` and **bold [docs](https://example.com) here** too",
+		"Use ` padded inline code ` and an `` empty span across several words",
 		"- **alpha beta** gamma `delta epsilon` zeta",
 		"***everything emphasized across a long enough line to wrap twice***",
 	}
@@ -158,6 +177,304 @@ func TestRenderPrefixesTables(t *testing.T) {
 		"  | a    |     2 |\n"
 	if got != want {
 		t.Fatalf("Render =\n%q\nwant\n%q", got, want)
+	}
+}
+
+func TestRenderFittingTableWithWidthPreservesBytes(t *testing.T) {
+	input := "| **Name** | `Count` |\n| --- | ---: |\n| a | 2 |\n"
+	opts := Options{Enabled: true, ANSI: true, Prefix: "  "}
+	want := Render(input, opts)
+	width := longestVisibleLine(want)
+	opts.Width = width
+	if got := Render(input, opts); got != want {
+		t.Fatalf("fitting table with width %d =\n%q\nwant\n%q", width, got, want)
+	}
+}
+
+func TestRenderFitsWideFiveColumnTable(t *testing.T) {
+	input := "| Source file | Target contexts | Context threshold 80 | Retention actions | Recent messages 3 |\n" +
+		"| --- | --- | --- | --- | --- |\n" +
+		"| raw.ndjson | turn | at 80% | compact | recent |\n"
+
+	natural := Render(input, Options{Enabled: true})
+	if got := longestVisibleLine(natural); got != 96 {
+		t.Fatalf("natural table width = %d, want 96:\n%s", got, natural)
+	}
+	got := Render(input, Options{Enabled: true, Width: 80})
+	assertTableLinesFit(t, got, 80)
+	if !strings.Contains(got, "|") {
+		t.Fatalf("wide five-column table used stacked fallback:\n%s", got)
+	}
+	for _, want := range []string{"Source file", "Context", "threshold 80", "Retention", "actions", "raw.ndjson", "recent"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("responsive table lost %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestRenderResponsiveTableAlignsEveryFragment(t *testing.T) {
+	input := "| Left | Right | Center |\n" +
+		"| --- | ---: | :---: |\n" +
+		"| alpha beta gamma | 123456789012 | abcdefghi |\n"
+	got := Render(input, Options{Enabled: true, Width: 30})
+	assertTableLinesFit(t, got, 30)
+	for _, want := range []string{
+		"| alpha   | 1234567 | abcdef |",
+		"| beta    |   89012 |  ghi   |",
+		"| gamma   |         |        |",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing aligned fragment %q from:\n%s", want, got)
+		}
+	}
+}
+
+func TestRenderResponsiveTableAlignsWrappedHeaders(t *testing.T) {
+	input := "| Left | Long Right Header | Long Center Header |\n" +
+		"| --- | ---: | :---: |\n" +
+		"| alpha beta gamma | 123456789012 | abcdefghi |\n"
+	got := Render(input, Options{Enabled: true, Width: 30})
+	assertTableLinesFit(t, got, 30)
+	for _, want := range []string{
+		"| Left    |    Long |  Long  |",
+		"|         |   Right | Center |",
+		"|         |  Header | Header |",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing aligned header fragment %q from:\n%s", want, got)
+		}
+	}
+}
+
+func TestFitTableWidthsIsDeterministic(t *testing.T) {
+	tests := []struct {
+		name    string
+		natural []int
+		budget  int
+		want    []int
+	}{
+		{
+			name:    "one extra cell goes to the leftmost eligible column",
+			natural: []int{5, 5, 5},
+			budget:  10,
+			want:    []int{4, 3, 3},
+		},
+		{
+			name:    "saturated columns are skipped in later rounds",
+			natural: []int{3, 4, 10},
+			budget:  14,
+			want:    []int{3, 4, 7},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := fitTableWidths(tt.natural, tt.budget)
+			if len(got) != len(tt.want) {
+				t.Fatalf("fitTableWidths(%v, %d) = %v, want %v", tt.natural, tt.budget, got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("fitTableWidths(%v, %d) = %v, want %v", tt.natural, tt.budget, got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+func TestWrapRenderedHardSplitsLongTokensWithoutDataLoss(t *testing.T) {
+	for _, input := range []string{
+		"`abcdefghijkl`",
+		"https://example.com/a-very-long-path",
+	} {
+		plain := renderInline(input, false, style{})
+		fragments := wrapRenderedHard(plain, 3)
+		if got := strings.Join(fragments, ""); got != plain {
+			t.Errorf("plain fragments for %q = %q, want %q", input, got, plain)
+		}
+		for _, fragment := range fragments {
+			if got := visibleLen(fragment); got > 3 {
+				t.Errorf("plain fragment width = %d, want <= 3: %q", got, fragment)
+			}
+		}
+
+		colored := renderInline(input, true, style{})
+		coloredFragments := wrapRenderedHard(colored, 3)
+		if got := stripANSI(strings.Join(coloredFragments, "")); got != plain {
+			t.Errorf("colored fragments for %q stripped = %q, want %q", input, got, plain)
+		}
+		for _, fragment := range coloredFragments {
+			if got := visibleLen(fragment); got > 3 {
+				t.Errorf("colored fragment width = %d, want <= 3: %q", got, fragment)
+			}
+		}
+	}
+}
+
+func TestRenderResponsiveTableMinimumGridAndStackedFallback(t *testing.T) {
+	input := "| A | B |\n| --- | --- |\n| x | y |\n"
+	grid := Render(input, Options{Enabled: true, Width: 13})
+	if !strings.HasPrefix(grid, "|") {
+		t.Fatalf("minimum grid width did not retain a grid:\n%s", grid)
+	}
+	assertTableLinesFit(t, grid, 13)
+
+	stacked := Render(input, Options{Enabled: true, Width: 12})
+	wantStacked := "A: x\nB: y\n"
+	if stacked != wantStacked {
+		t.Fatalf("one column below the minimum grid =\n%q\nwant\n%q", stacked, wantStacked)
+	}
+	assertTableLinesFit(t, stacked, 12)
+}
+
+func TestRenderResponsiveTableStackedFieldsPreserveRaggedRows(t *testing.T) {
+	input := "| | Known |\n" +
+		"| --- | --- |\n" +
+		"| first |\n" +
+		"| second | value | extra |\n"
+	got := Render(input, Options{Enabled: true, Width: 18})
+	want := "Column 1: first\n" +
+		"Known:\n" +
+		"Column 3:\n" +
+		"\n" +
+		"Column 1: second\n" +
+		"Known: value\n" +
+		"Column 3: extra\n"
+	if got != want {
+		t.Fatalf("stacked ragged table =\n%q\nwant\n%q", got, want)
+	}
+	assertTableLinesFit(t, got, 18)
+
+	headerOnly := Render("| | Name |\n| --- | --- |\n", Options{Enabled: true, Width: 12})
+	if want := "- Column 1\n- Name\n"; headerOnly != want {
+		t.Fatalf("stacked header-only table =\n%q\nwant\n%q", headerOnly, want)
+	}
+	headerOnly = Render("| | Name |\n| --- | --- |", Options{Enabled: true, Width: 12})
+	if want := "- Column 1\n- Name"; headerOnly != want {
+		t.Fatalf("stacked header-only table without trailing newline =\n%q\nwant\n%q", headerOnly, want)
+	}
+}
+
+func TestRenderResponsiveTableIncludesPrefixInBudget(t *testing.T) {
+	input := "| A | B |\n| --- | --- |\n| x | y |\n"
+	grid := Render(input, Options{Enabled: true, Prefix: "  ", Width: 15})
+	if !strings.HasPrefix(grid, "  |") {
+		t.Fatalf("prefix-inclusive minimum width did not retain grid:\n%s", grid)
+	}
+	assertTableLinesFit(t, grid, 15)
+
+	stacked := Render(input, Options{Enabled: true, Prefix: "  ", Width: 14})
+	if strings.Contains(stacked, "|") {
+		t.Fatalf("prefix was not counted in stacked fallback budget:\n%s", stacked)
+	}
+	assertTableLinesFit(t, stacked, 14)
+}
+
+func TestRenderResponsiveTableProgressesWithWidePrefix(t *testing.T) {
+	input := "| A | B |\n| --- | --- |\n| x | y |"
+	got := Render(input, Options{Enabled: true, Prefix: "wide", Width: 3})
+	if strings.Contains(got, "|") {
+		t.Fatalf("wide prefix did not use stacked fallback:\n%s", got)
+	}
+	for _, want := range []string{"wideA", "wideB", "widex", "widey"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("wide-prefix fallback did not make progress through %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestRenderResponsiveTablePreservesFinalNewline(t *testing.T) {
+	base := "| A | B |\n| --- | --- |\n| long value | z |"
+	for _, layout := range []struct {
+		name  string
+		width int
+	}{
+		{name: "wrapped grid", width: 13},
+		{name: "stacked fallback", width: 12},
+	} {
+		for _, trailingNewline := range []bool{false, true} {
+			t.Run(layout.name+"/"+map[bool]string{false: "without trailing newline", true: "with trailing newline"}[trailingNewline], func(t *testing.T) {
+				input := base
+				if trailingNewline {
+					input += "\n"
+				}
+				got := Render(input, Options{Enabled: true, Width: layout.width})
+				if strings.HasSuffix(got, "\n") != trailingNewline {
+					t.Fatalf("trailing newline = %t, want %t: %q", strings.HasSuffix(got, "\n"), trailingNewline, got)
+				}
+				assertTableLinesFit(t, got, layout.width)
+			})
+		}
+	}
+}
+
+func TestRenderResponsiveTablesStripANSIToPlain(t *testing.T) {
+	input := "| Item | Value |\n" +
+		"| --- | ---: |\n" +
+		"| **alpha beta gamma** | `123456` |\n"
+	for _, tt := range []struct {
+		name  string
+		width int
+	}{
+		{name: "wrapped grid", width: 15},
+		{name: "stacked fallback", width: 12},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			plain := Render(input, Options{Enabled: true, Width: tt.width})
+			colored := Render(input, Options{Enabled: true, ANSI: true, Width: tt.width})
+			if got := stripANSI(colored); got != plain {
+				t.Fatalf("ANSI table stripped =\n%q\nplain =\n%q", got, plain)
+			}
+			if !strings.Contains(colored, "\x1b[") {
+				t.Fatalf("ANSI table contains no styling: %q", colored)
+			}
+			assertTableLinesFit(t, colored, tt.width)
+		})
+	}
+}
+
+func TestWrapRenderedHardPreservesUTF8(t *testing.T) {
+	input := "é界🙂abcdef"
+	fragments := wrapRenderedHard(input, 2)
+	if got := strings.Join(fragments, ""); got != input {
+		t.Fatalf("joined UTF-8 fragments = %q, want %q", got, input)
+	}
+	for _, fragment := range fragments {
+		if !utf8.ValidString(fragment) {
+			t.Errorf("fragment is invalid UTF-8: %q", fragment)
+		}
+		if got := visibleLen(fragment); got > 2 {
+			t.Errorf("fragment width = %d, want <= 2: %q", got, fragment)
+		}
+	}
+}
+
+func TestStreamResponsiveTableMatchesRenderAcrossDeltas(t *testing.T) {
+	input := "| **Source file** | Count |\n" +
+		"| --- | ---: |\n" +
+		"| alpha beta gamma delta | `123456789` |\n"
+	for _, tt := range []struct {
+		name  string
+		width int
+	}{
+		{name: "wrapped grid", width: 20},
+		{name: "stacked fallback", width: 12},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := Options{Enabled: true, ANSI: true, Width: tt.width}
+			want := Render(input, opts)
+
+			stream := NewStream(opts)
+			var got strings.Builder
+			for _, delta := range []string{"| **Sou", "rce file** | Co", "unt |\n| --- | ---: |\n| alpha beta ", "gamma delta | `123", "456789` |\n"} {
+				if text := stream.Write(delta); text != "" {
+					t.Fatalf("table stream emitted before termination: %q", text)
+				}
+			}
+			got.WriteString(stream.Flush())
+			if got.String() != want {
+				t.Fatalf("streamed responsive table =\n%q\nwant\n%q", got.String(), want)
+			}
+		})
 	}
 }
 
@@ -323,6 +640,32 @@ func TestRenderHighlightingIsAdditive(t *testing.T) {
 	}
 }
 
+func TestRenderUsesSelectedFenceThemeWithoutEnablingANSI(t *testing.T) {
+	input := "```go\nfunc main() {}\n```\n"
+	light := Render(input, Options{Enabled: true, ANSI: true, ColorTheme: highlight.ThemeLight})
+	if !strings.Contains(light, "\x1b[38;2;0;0;255mfunc") {
+		t.Fatalf("light fence missing keyword palette: %q", light)
+	}
+	if strings.Contains(light, "\x1b[38;2;101;169;224mfunc") {
+		t.Fatalf("light fence used dark keyword palette: %q", light)
+	}
+
+	stream := NewStream(Options{Enabled: true, ANSI: true, ColorTheme: highlight.ThemeLight})
+	var streamed strings.Builder
+	for _, delta := range []string{"```go\nfu", "nc main() {}\n```\n"} {
+		streamed.WriteString(stream.Write(delta))
+	}
+	streamed.WriteString(stream.Flush())
+	if got := streamed.String(); !strings.Contains(got, "\x1b[38;2;0;0;255mfunc") {
+		t.Fatalf("streamed light fence missing keyword palette: %q", got)
+	}
+
+	plain := Render(input, Options{Enabled: true, ColorTheme: highlight.ThemeLight})
+	if strings.Contains(plain, "\x1b[") {
+		t.Fatalf("theme enabled ANSI on its own: %q", plain)
+	}
+}
+
 func TestRenderLeavesUnknownLanguageUntouched(t *testing.T) {
 	for _, info := range []string{"", "brainfuck", "text"} {
 		input := "```" + info + "\nfunc main() {\n```\n"
@@ -391,6 +734,72 @@ func TestStreamHighlightsAcrossWrites(t *testing.T) {
 	got.WriteString(stream.Flush())
 	if got.String() != want {
 		t.Fatalf("streamed render =\n%q\nwant\n%q", got.String(), want)
+	}
+}
+
+func TestStreamBoundaryQueryPreservesHighlightedFenceState(t *testing.T) {
+	stream := NewStream(Options{Enabled: true, ANSI: true})
+	if got := stream.Write("```go\n"); got != "  ```go\n" {
+		t.Fatalf("opening fence = %q", got)
+	}
+	if !stream.AtLineBoundary() {
+		t.Fatal("complete opening fence should be a safe boundary")
+	}
+	if got := stream.Write("/* partial"); got != "" {
+		t.Fatalf("partial highlighted line = %q, want buffered", got)
+	}
+	if stream.AtLineBoundary() {
+		t.Fatal("incomplete highlighted code line reported as a safe boundary")
+	}
+
+	first := stream.Write("\n")
+	if !stream.AtLineBoundary() {
+		t.Fatal("newline-complete highlighted code line should be a safe boundary")
+	}
+	continued := stream.Write("continued */\n```\n")
+	if !strings.Contains(first, "\x1b[") || !strings.Contains(continued, "\x1b[") {
+		t.Fatalf("boundary query flushed or reset multiline highlight state: first=%q continued=%q", first, continued)
+	}
+	if got, want := stripANSI(first+continued), "  /* partial\n  continued */\n  ```\n"; got != want {
+		t.Fatalf("highlighted fence source changed:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestStreamBoundaryQueryDoesNotFlushPendingTextOrTable(t *testing.T) {
+	stream := NewStream(Options{Enabled: true})
+	if got := stream.Write("partial"); got != "" {
+		t.Fatalf("partial write = %q, want buffered", got)
+	}
+	if stream.AtLineBoundary() {
+		t.Fatal("incomplete source line reported as a safe boundary")
+	}
+	if got := stream.Write("\n| A | B |\n| --- | --- |\n"); got != "partial\n" {
+		t.Fatalf("complete line/table write = %q, want only partial line", got)
+	}
+	if !stream.AtLineBoundary() {
+		t.Fatal("newline-complete buffered table should be a safe boundary")
+	}
+	if got := stream.Flush(); !strings.Contains(got, "| A") {
+		t.Fatalf("boundary query flushed or lost table: %q", got)
+	}
+}
+
+func longestVisibleLine(text string) int {
+	longest := 0
+	for _, line := range strings.Split(strings.TrimSuffix(text, "\n"), "\n") {
+		if width := visibleLen(line); width > longest {
+			longest = width
+		}
+	}
+	return longest
+}
+
+func assertTableLinesFit(t *testing.T, text string, width int) {
+	t.Helper()
+	for _, line := range strings.Split(strings.TrimSuffix(text, "\n"), "\n") {
+		if visible := visibleLen(line); visible > width {
+			t.Fatalf("physical line width = %d, want <= %d: %q", visible, width, line)
+		}
 	}
 }
 

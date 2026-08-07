@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/ClarifiedLabs/mdcli/internal/buildinfo"
+	"github.com/ClarifiedLabs/mdcli/internal/highlight"
 	"github.com/ClarifiedLabs/mdcli/internal/markdown"
 	"github.com/ClarifiedLabs/mdcli/internal/pager"
 	"github.com/ClarifiedLabs/mdcli/internal/term"
@@ -29,6 +30,7 @@ func main() {
 	var (
 		width       int
 		colorMode   string
+		themeMode   string
 		pagerMode   string
 		showVersion bool
 	)
@@ -38,6 +40,9 @@ func main() {
 	fs.IntVar(&width, "width", 0, "wrap width in columns (0 = auto)")
 	fs.StringVar(&colorMode, "color", "auto", "color output: auto, always, or never")
 	fs.StringVar(&colorMode, "colour", "auto", "alias for -color")
+	fs.StringVar(&themeMode, "theme", "dark", "syntax theme: dark, light, or auto (default \"dark\")")
+	fs.StringVar(&themeMode, "colour-theme", "dark", "alias for -theme")
+	fs.StringVar(&themeMode, "color-theme", "dark", "alias for -theme")
 	fs.StringVar(&pagerMode, "p", "auto", "pager: auto, always, or never")
 	fs.StringVar(&pagerMode, "pager", "auto", "pager: auto, always, or never")
 	fs.BoolVar(&showVersion, "version", false, "print version information and exit")
@@ -62,7 +67,12 @@ func main() {
 		os.Exit(2)
 	}
 	w := resolveWidth(width)
-	opts := viewer.Options{ANSI: ansi, Width: w}
+	theme, err := resolveTheme(themeMode)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "md:", err)
+		os.Exit(2)
+	}
+	opts := viewer.Options{ANSI: ansi, Theme: theme, Width: w}
 
 	// Render everything into one buffer, then emit it once: through a pager
 	// when interactive, or straight to stdout otherwise.
@@ -159,6 +169,39 @@ func defaultColor() bool {
 	return term.IsTerminal(os.Stdout)
 }
 
+// resolveTheme turns the -theme flag value into a highlight palette selection.
+// "auto" inspects MDCLI_THEME and COLORFGBG, falling back to dark.
+func resolveTheme(mode string) (highlight.Theme, error) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "dark", "":
+		return highlight.ThemeDark, nil
+	case "light":
+		return highlight.ThemeLight, nil
+	case "auto":
+		if v := strings.ToLower(strings.TrimSpace(os.Getenv("MDCLI_THEME"))); v == "light" {
+			return highlight.ThemeLight, nil
+		} else if v == "dark" {
+			return highlight.ThemeDark, nil
+		}
+		if v := strings.TrimSpace(os.Getenv("COLORFGBG")); v != "" {
+			// COLORFGBG is "fg;bg" where bg 0-6 is dark, 7/15 light (xterm).
+			parts := strings.Split(v, ";")
+			bg := parts[len(parts)-1]
+			if bg == "15" || bg == "7" || bg == "14" || bg == "11" {
+				return highlight.ThemeLight, nil
+			}
+		}
+		if v := strings.ToLower(strings.TrimSpace(os.Getenv("TERM_BACKGROUND"))); v == "light" {
+			return highlight.ThemeLight, nil
+		} else if v == "dark" {
+			return highlight.ThemeDark, nil
+		}
+		return highlight.ThemeDark, nil
+	default:
+		return highlight.ThemeDark, fmt.Errorf("invalid -theme value %q (want dark, light, or auto)", mode)
+	}
+}
+
 // resolveWidth picks the wrap width: an explicit flag value wins, then the
 // COLUMNS environment variable, then the terminal size, then a fallback.
 func resolveWidth(explicit int) int {
@@ -187,6 +230,7 @@ With no file arguments, Markdown is read from standard input.
 Flags:
   -w, -width int    wrap width in columns (0 = auto)
   -color string     color output: auto, always, or never (default "auto")
+  -theme string     syntax theme: dark, light, or auto (default "dark")
   -p, -pager string page output through a pager: auto, always, or never (default "auto")
   -version          print version information and exit
   -h, -help         show this help

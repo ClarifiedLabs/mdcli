@@ -7,6 +7,7 @@ package viewer
 import (
 	"strings"
 
+	"github.com/ClarifiedLabs/mdcli/internal/highlight"
 	"github.com/ClarifiedLabs/mdcli/internal/markdown"
 	"github.com/ClarifiedLabs/mdcli/internal/mermaid"
 )
@@ -20,6 +21,8 @@ const (
 type Options struct {
 	// ANSI applies terminal styling (bold, italic, links, code) when true.
 	ANSI bool
+	// Theme selects the syntax highlighting palette when ANSI is true. Zero value is dark.
+	Theme highlight.Theme
 	// Width enables word wrapping for paragraphs and list bodies when positive.
 	Width int
 }
@@ -32,9 +35,10 @@ func Render(text string, opts Options) string {
 		return ""
 	}
 	stream := markdown.NewStream(markdown.Options{
-		Enabled: true,
-		ANSI:    opts.ANSI,
-		Width:   opts.Width,
+		Enabled:    true,
+		ANSI:       opts.ANSI,
+		ColorTheme: opts.Theme,
+		Width:      opts.Width,
 	})
 
 	lines := strings.Split(text, "\n")
