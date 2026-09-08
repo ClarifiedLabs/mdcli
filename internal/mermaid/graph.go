@@ -57,6 +57,10 @@ type graph struct {
 	nodes []*gnode
 	index map[string]*gnode
 	edges []*gedge
+
+	// Drawing metadata is consumed only by responsive flowchart selection.
+	labelOverlap bool
+	labelClipped bool
 }
 
 func newGraph() *graph {

@@ -4,7 +4,7 @@
 // Supported diagram types: flowcharts (flowchart/graph), sequence diagrams,
 // state diagrams (stateDiagram / stateDiagram-v2) and class diagrams.
 //
-//	out, err := mermaid.Render("flowchart TD\n  A[Start] --> B{OK?}\n  B -->|yes| C[Done]")
+//	out, err := mermaid.Render("flowchart TD\n  A[Start] --> B{OK?}\n  B -->|yes| C[Done]", mermaid.Options{Width: 80})
 package mermaid
 
 import (
@@ -57,11 +57,18 @@ func detectLines(lines []string) Kind {
 	return KindUnknown
 }
 
-// Render parses the Mermaid source, detects its diagram type and renders it
-// as ASCII art. The result always ends with a newline. Sources or diagrams that
-// exceed the fixed budgets documented in limits.go return an error, not partial
-// output.
-func Render(source string) (string, error) {
+// Options controls diagram rendering.
+type Options struct {
+	// Width is the available terminal columns; it must be positive for flowcharts.
+	// Node labels may wrap, horizontal layouts may rotate, and complex diagrams
+	// may become a Nodes / Connections list. Other diagram kinds ignore Width.
+	Width int
+}
+
+// Render parses Mermaid and renders ASCII art, adapting flowcharts to Width.
+// Successful output ends with a newline. Sources or diagrams that exceed the
+// fixed budgets documented in limits.go return an error, not partial output.
+func Render(source string, opts Options) (string, error) {
 	if len(source) > MaxSourceBytes {
 		return "", limitError("source bytes", MaxSourceBytes)
 	}
@@ -71,11 +78,10 @@ func Render(source string) (string, error) {
 	var err error
 	switch kind {
 	case KindFlowchart:
-		var g *graph
-		g, err = parseFlowchart(lines)
-		if err == nil {
-			out, err = g.render()
+		if opts.Width <= 0 {
+			return "", fmt.Errorf("mermaid: flowchart width must be positive")
 		}
+		return renderResponsiveFlowchart(lines, title, opts.Width)
 	case KindSequence:
 		var d *seqDiagram
 		d, err = parseSequence(lines)

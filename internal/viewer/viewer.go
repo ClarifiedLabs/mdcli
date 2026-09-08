@@ -1,7 +1,9 @@
 // Package viewer renders a Markdown document for the terminal, combining the
 // markdown renderer with ASCII Mermaid diagrams. Fenced code blocks tagged
-// "mermaid" are rendered as ASCII art; every other block is passed through the
-// markdown renderer unchanged. Only the standard library is used.
+// "mermaid" are rendered as ASCII art, with flowcharts adapting to the requested
+// width. Other diagram kinds and code blocks retain their existing layout.
+// Every other block passes through the markdown renderer. Only the standard
+// library is used.
 package viewer
 
 import (
@@ -25,17 +27,23 @@ type Options struct {
 	ANSI bool
 	// Theme selects the syntax highlighting palette when ANSI is true. Zero value is dark.
 	Theme highlight.Theme
-	// Width enables word wrapping for paragraphs and list bodies when positive.
+	// Width controls paragraph/list wrapping and adaptive flowchart layout.
+	// Nonpositive values use markdown.DefaultWidth (80 columns). Other Mermaid
+	// diagram kinds and code blocks are not adapted.
 	Width int
 }
 
 // Render formats a complete Markdown document. Mermaid code fences are rendered
 // as ASCII diagrams; if a diagram cannot be rendered it falls back to a plain
-// indented code fence. Resource-limit fallbacks include an explanation. Mermaid
-// content is stripped of terminal controls regardless of the ANSI option.
+// indented code fence. Flowcharts that cannot fit Width use a readable node and
+// connection list instead. Resource-limit fallbacks include an explanation.
+// Mermaid content is stripped of terminal controls regardless of the ANSI option.
 func Render(text string, opts Options) string {
 	if text == "" {
 		return ""
+	}
+	if opts.Width <= 0 {
+		opts.Width = markdown.DefaultWidth
 	}
 	stream := markdown.NewStream(markdown.Options{
 		Enabled:    true,
@@ -84,7 +92,7 @@ func Render(text string, opts Options) string {
 			continue
 		}
 
-		i = renderMermaidBlock(&out, stream, lines, i, marker)
+		i = renderMermaidBlock(&out, stream, lines, i, marker, opts.Width)
 	}
 
 	out.WriteString(stream.Flush())
@@ -93,7 +101,7 @@ func Render(text string, opts Options) string {
 
 // renderMermaidBlock renders the mermaid fence that opens at lines[start]. It
 // returns the index of the last consumed line (the loop advances past it).
-func renderMermaidBlock(out *strings.Builder, stream *markdown.Stream, lines []string, start int, marker string) int {
+func renderMermaidBlock(out *strings.Builder, stream *markdown.Stream, lines []string, start int, marker string, width int) int {
 	var body []string
 	j := start + 1
 	closed := false
@@ -110,12 +118,13 @@ func renderMermaidBlock(out *strings.Builder, stream *markdown.Stream, lines []s
 
 	source := strings.Join(body, "\n")
 	// Keep the raw byte budget meaningful even when filtering would shrink the
-	// input. Oversized source goes straight to Render's preflight rejection.
+	// input. Oversized source goes straight to the renderer's preflight rejection.
 	if len(source) <= mermaid.MaxSourceBytes {
 		source = diagramText(strings.ReplaceAll(source, "\t", "    "))
 	}
-	rendered, err := mermaid.Render(source)
+	rendered, err := mermaid.Render(source, mermaid.Options{Width: width})
 	if err == nil {
+		// Emit diagrams and semantic list fallbacks directly, never as Markdown.
 		// Also filter after rendering, in case label decoding introduces controls.
 		rendered = diagramText(rendered)
 		out.WriteString(rendered)

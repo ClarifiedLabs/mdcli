@@ -43,7 +43,8 @@ This is bold, italic, and inline code. See the docs.
   Makefile and unified diffs. Untagged and unrecognized fences are left as
   written, and highlighting only adds color, so code stays copy-pasteable.
 - ` ```mermaid ` fences rendered as ASCII art:
-  - **Flowcharts** (`flowchart` / `graph`, TD/BT/LR/RL)
+  - **Flowcharts** (`flowchart` / `graph`, TD/BT/LR/RL), adapted to the display width
+    with label wrapping, optional rotation, and a readable list fallback
   - **Sequence diagrams** (`sequenceDiagram`)
   - **State diagrams** (`stateDiagram` / `stateDiagram-v2`)
   - **Class diagrams** (`classDiagram`)
@@ -106,6 +107,22 @@ Flags:
   -h, -help         show this help
 ```
 
+### Width and flowcharts
+
+`-w` / `-width` controls text wrapping, responsive tables, and adaptive Mermaid
+flowcharts. Flowcharts that already fit without destructive label placements
+are unchanged. Wider flowcharts can wrap node labels and rotate horizontal
+layouts (`LR` → `TD`, `RL` → `BT`) to fit without wrapping completed ASCII art.
+Complex diagrams or narrow displays use a readable list of nodes and connections
+instead of squeezed ASCII art.
+Sequence, state, and class diagrams, and ordinary fenced code blocks, are not
+adapted to the width.
+
+A larger `-w` can preserve a horizontal flowchart's orientation when it fits
+without destructive label placements; `-w 120` does not guarantee that every
+flowchart stays horizontal. Flowcharts always use the resolved display width;
+there is no separate unlimited rendering mode.
+
 ### Pager
 
 When stdout is a terminal, `md` pipes its output through a pager so long
@@ -122,6 +139,17 @@ stdout. When stdout is not a terminal (a pipe or redirect), no pager is ever
 used, so `md` stays composable in scripts. Use `-p never` to disable paging
 unconditionally.
 
+For content wider than your terminal, use horizontal scrolling:
+
+```sh
+PAGER='less -RS' md -w 120 ~/diagrams.md
+```
+
+`less -S` avoids folding long lines; scroll horizontally to see the hidden
+columns. It does not make the entire diagram visible at once on a narrower
+terminal. `-R` preserves terminal colors. The requested width still controls
+flowchart adaptation before the pager displays the result.
+
 ### Examples
 
 ```sh
@@ -130,7 +158,7 @@ md -w 100 notes.md           # wrap at 100 columns
 cat doc.md | md              # read from stdin
 md -color never doc.md > out.txt   # strip styling for a plain file
 md -p never long-doc.md      # render without a pager
-PAGER="less -S" md wide.md   # page through less with chopped lines
+PAGER='less -RS' md -w 120 ~/diagrams.md  # scroll horizontally without folding lines
 ```
 
 ## Mermaid examples
@@ -208,7 +236,10 @@ Rendering budgets are fixed and apply **per diagram**, not per document:
 
 State start/end markers count as nodes. Node lists, note participant lists
 (including repeats), and composite-state nesting also have a 256-entry limit.
-Canvas budgets include front-matter titles. Tabs are expanded to four spaces;
+Canvas budgets include front-matter titles. Flowchart lists share these size
+budgets and have a 4,000,000-byte output cap, including their titles. On a
+one-column display, an indivisible double-width glyph is kept intact.
+Tabs are expanded to four spaces;
 both raw and normalized source must fit the source budget.
 
 If a budget is exceeded, `md` shows the reason followed by the source code fence,
@@ -229,8 +260,10 @@ go build -o md ./cmd/md
 
 The document is streamed line-by-line through a Markdown renderer. When a
 ` ```mermaid ` fence is encountered, its body is handed to the ASCII Mermaid
-renderer and the resulting diagram is emitted in place of the fence. Every
-other fenced code block passes through unchanged.
+renderer along with the display width. The resulting diagram, or a flowchart's
+node-and-connection list fallback, is emitted directly in place of the fence;
+labels are not reparsed as Markdown. Other diagram kinds keep their layout, and
+every other fenced code block passes through unchanged.
 
 ## License
 

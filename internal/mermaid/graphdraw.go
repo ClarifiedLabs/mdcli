@@ -1,5 +1,7 @@
 package mermaid
 
+import "sort"
+
 // drawMarkerV draws an edge-end decoration on a vertical approach.
 // dir is 'u' (pointing up, into the node above) or 'd' (pointing down).
 func drawMarkerV(c *canvas, x, y int, m marker, dir byte) {
@@ -51,6 +53,41 @@ func drawMarkerH(c *canvas, x, y int, m marker, dir byte) {
 type labelDraw struct {
 	cx, y int // cx is the horizontal center of the label
 	text  string
+}
+
+// labelsOverlap compares occupied intervals, including padding, without
+// deduplicating equal labels. Sorting a separate slice preserves paint order.
+func labelsOverlap(labels []labelDraw) bool {
+	type interval struct{ y, start, end int }
+	spans := make([]interval, 0, len(labels))
+	for _, l := range labels {
+		w := dispWidth(l.text)
+		if w > 0 {
+			start := l.cx - w/2
+			spans = append(spans, interval{l.y, start, start + w})
+		}
+	}
+	sort.Slice(spans, func(i, j int) bool {
+		if spans[i].y != spans[j].y {
+			return spans[i].y < spans[j].y
+		}
+		return spans[i].start < spans[j].start
+	})
+	for i := 1; i < len(spans); i++ {
+		if spans[i].y == spans[i-1].y && spans[i].start < spans[i-1].end {
+			return true
+		}
+	}
+	return false
+}
+
+func (g *graph) recordLabelPlacement(labels []labelDraw) {
+	g.labelOverlap = labelsOverlap(labels)
+	for _, l := range labels {
+		if l.cx-dispWidth(l.text)/2 < 0 || l.y < 0 {
+			g.labelClipped = true
+		}
+	}
 }
 
 func drawLabels(c *canvas, labels []labelDraw) {
@@ -320,6 +357,7 @@ func (g *graph) drawVertical(ranks [][]*gnode) (string, error) {
 		}
 	}
 	g.drawSelfLoops(c, &labels)
+	g.recordLabelPlacement(labels)
 	drawLabels(c, labels)
 	for _, m := range markers {
 		drawMarkerV(c, m.x, m.y, m.m, m.dir)
@@ -481,6 +519,7 @@ func (g *graph) drawHorizontal(ranks [][]*gnode) (string, error) {
 			labels = append(labels, labelDraw{cx + 4 + dispWidth(e.label)/2, r1, e.label})
 		}
 	}
+	g.recordLabelPlacement(labels)
 	drawLabels(c, labels)
 	for _, m := range markers {
 		drawMarkerH(c, m.x, m.y, m.m, m.dir)

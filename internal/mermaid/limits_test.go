@@ -50,7 +50,7 @@ func TestRenderResourceLimits(t *testing.T) {
 		{"state nesting", "stateDiagram-v2\n" + strings.Repeat("state A {\n", maxNodes+1)},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			out, err := Render(tt.source)
+			out, err := Render(tt.source, Options{Width: maxCanvasDimension})
 			if !errors.Is(err, ErrLimitExceeded) || out != "" {
 				t.Fatalf("Render returned %d bytes, error %v; want empty output and ErrLimitExceeded", len(out), err)
 			}
@@ -67,7 +67,7 @@ func TestLimitErrorIdentity(t *testing.T) {
 		t.Fatal("limit error must include resource and maximum:", err)
 	}
 	for _, source := range []string{"pie\nA", "flowchart TD\nA[", "flowchart TD", "sequenceDiagram", "stateDiagram-v2", "classDiagram"} {
-		if out, err := Render(source); err == nil || errors.Is(err, ErrLimitExceeded) || out != "" {
+		if out, err := Render(source, Options{Width: maxCanvasDimension}); err == nil || errors.Is(err, ErrLimitExceeded) || out != "" {
 			t.Errorf("Render(%q) = %q, %v; want empty output and non-limit error", source, out, err)
 		}
 	}
@@ -76,7 +76,7 @@ func TestLimitErrorIdentity(t *testing.T) {
 func TestSourceLimitBoundary(t *testing.T) {
 	source := "flowchart TD\nA\n%%"
 	source += strings.Repeat("x", MaxSourceBytes-len(source))
-	if _, err := Render(source); err != nil {
+	if _, err := Render(source, Options{Width: maxCanvasDimension}); err != nil {
 		t.Fatal(err)
 	}
 	if Detect(source) != KindFlowchart || Detect(source+"x") != KindUnknown {
@@ -84,9 +84,10 @@ func TestSourceLimitBoundary(t *testing.T) {
 	}
 }
 
-func TestTitleBudget(t *testing.T) {
+// Non-flowchart diagrams use unwrapped titles.
+func TestUnwrappedTitleBudget(t *testing.T) {
 	var chain strings.Builder
-	chain.WriteString("flowchart TD\n")
+	chain.WriteString("stateDiagram-v2\n")
 	for i := 0; i < 199; i++ {
 		fmt.Fprintf(&chain, "A%d --> A%d\n", i, i+1)
 	}
@@ -95,14 +96,14 @@ func TestTitleBudget(t *testing.T) {
 		width         int
 		wantErr       bool
 	}{
-		{"width boundary", "flowchart TD\nA", maxCanvasDimension, false},
-		{"width overflow", "flowchart TD\nA", maxCanvasDimension + 1, true},
+		{"width boundary", "stateDiagram-v2\nstate A", maxCanvasDimension, false},
+		{"width overflow", "stateDiagram-v2\nstate A", maxCanvasDimension + 1, true},
 		{"combined area", chain.String(), maxCanvasDimension, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			source := "---\ntitle: " + strings.Repeat("x", tt.width) + "\n---\n" + tt.diagram
-			out, err := Render(source)
-			if (err != nil) != tt.wantErr || (err != nil && out != "") {
+			out, err := Render(source, Options{Width: 40})
+			if (err != nil) != tt.wantErr || (err != nil && (out != "" || !errors.Is(err, ErrLimitExceeded))) {
 				t.Fatalf("Render returned %d bytes, error %v; wantErr=%v", len(out), err, tt.wantErr)
 			}
 		})
@@ -337,7 +338,7 @@ func longStateIdentifierSource(id string) string {
 }
 
 func TestGraphLongIdentifierAllocations(t *testing.T) {
-	want, err := Render(longStateIdentifierSource("A"))
+	want, err := Render(longStateIdentifierSource("A"), Options{Width: maxCanvasDimension})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,7 +371,7 @@ func BenchmarkRenderLongStateIdentifier(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := Render(source); err != nil {
+		if _, err := Render(source, Options{Width: maxCanvasDimension}); err != nil {
 			b.Fatal(err)
 		}
 	}

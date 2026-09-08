@@ -244,7 +244,7 @@ func TestFlowchartUnicodeLabels(t *testing.T) {
 
 func mustRender(t *testing.T, src string) string {
 	t.Helper()
-	out, err := Render(src)
+	out, err := Render(src, Options{Width: maxCanvasDimension})
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}

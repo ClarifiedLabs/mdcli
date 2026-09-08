@@ -33,7 +33,7 @@ func TestCorpus(t *testing.T) {
 			}
 			source := string(b)
 
-			got, err := Render(source)
+			got, err := Render(source, Options{Width: maxCanvasDimension})
 			if err != nil {
 				t.Fatalf("Render: %v", err)
 			}
@@ -177,7 +177,7 @@ func checkCanvasShape(t *testing.T, out string) {
 func checkDeterministic(t *testing.T, source, first string) {
 	t.Helper()
 	for i := 0; i < 5; i++ {
-		got, err := Render(source)
+		got, err := Render(source, Options{Width: maxCanvasDimension})
 		if err != nil {
 			t.Fatalf("re-render %d: %v", i, err)
 		}

@@ -28,10 +28,10 @@ func TestDetect(t *testing.T) {
 }
 
 func TestRenderUnknown(t *testing.T) {
-	if _, err := Render("gantt\ntitle x"); err == nil {
+	if _, err := Render("gantt\ntitle x", Options{Width: 80}); err == nil {
 		t.Errorf("expected error for unsupported diagram")
 	}
-	if _, err := Render(""); err == nil {
+	if _, err := Render("", Options{Width: 80}); err == nil {
 		t.Errorf("expected error for empty input")
 	}
 }
@@ -89,7 +89,7 @@ func TestRenderNoPanic(t *testing.T) {
 		"---\ntitle: t\n---\nsequenceDiagram\nA->>B: hi",
 	}
 	for _, src := range corpus {
-		out, err := Render(src)
+		out, err := Render(src, Options{Width: 80})
 		if err != nil {
 			t.Errorf("Render(%q) error: %v", src, err)
 			continue

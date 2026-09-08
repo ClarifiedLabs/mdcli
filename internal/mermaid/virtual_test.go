@@ -27,7 +27,7 @@ func TestRenderVirtualBudget(t *testing.T) {
 	for _, dir := range []string{"TD", "BT", "LR", "RL"} {
 		t.Run(dir, func(t *testing.T) {
 			source := strings.Replace(parallelSpanSource(18, 512), "TD", dir, 1)
-			out, err := Render(source)
+			out, err := Render(source, Options{Width: maxCanvasDimension})
 			if dir == "BT" {
 				// Reversing this layout needs more canvas area, independently
 				// of its legal virtual-node count.
@@ -37,7 +37,7 @@ func TestRenderVirtualBudget(t *testing.T) {
 			} else if err != nil || out == "" {
 				t.Fatalf("8192 virtual nodes: got %d bytes, error %v", len(out), err)
 			}
-			if out, err := Render(source + "N0 --> N2\n"); !errors.Is(err, ErrLimitExceeded) || out != "" || !strings.Contains(err.Error(), "virtual nodes") {
+			if out, err := Render(source+"N0 --> N2\n", Options{Width: maxCanvasDimension}); !errors.Is(err, ErrLimitExceeded) || out != "" || !strings.Contains(err.Error(), "virtual nodes") {
 				t.Fatalf("8193 virtual nodes: want empty output and virtual limit, got %d bytes, %v", len(out), err)
 			}
 		})
@@ -54,7 +54,7 @@ func TestLongSpanIndependentBudgets(t *testing.T) {
 		{130, "virtual nodes"}, // 8256 virtual nodes: rejected before expansion.
 	} {
 		t.Run(fmt.Sprint(tt.nodes), func(t *testing.T) {
-			out, err := Render(longSpanSource(tt.nodes))
+			out, err := Render(longSpanSource(tt.nodes), Options{Width: maxCanvasDimension})
 			if tt.resource == "" {
 				if err != nil || out == "" {
 					t.Fatalf("got %d bytes, %v", len(out), err)
@@ -83,7 +83,7 @@ func BenchmarkRenderParallelVirtualNodes(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				if _, err := Render(source); err != nil {
+				if _, err := Render(source, Options{Width: maxCanvasDimension}); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -99,7 +99,7 @@ func BenchmarkRenderVirtualNodes(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				if _, err := Render(source); err != nil {
+				if _, err := Render(source, Options{Width: maxCanvasDimension}); err != nil {
 					b.Fatal(err)
 				}
 			}
