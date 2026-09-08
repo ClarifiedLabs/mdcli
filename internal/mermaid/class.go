@@ -27,15 +27,17 @@ type classInfo struct {
 func parseClass(lines []string) (*graph, error) {
 	g := newGraph()
 	classes := map[string]*classInfo{}
-	getClass := func(name string) *classInfo {
+	getClass := func(name string) (*classInfo, error) {
 		base := reGenerics.ReplaceAllString(name, "")
 		if ci, ok := classes[base]; ok {
-			return ci
+			return ci, nil
+		}
+		if _, err := g.node(base); err != nil {
+			return nil, err
 		}
 		ci := &classInfo{name: displayGenerics(name)}
 		classes[base] = ci
-		g.node(base)
-		return ci
+		return ci, nil
 	}
 	addMember := func(ci *classInfo, m string) {
 		m = strings.TrimSpace(displayGenerics(m))
@@ -78,7 +80,9 @@ func parseClass(lines []string) (*graph, error) {
 		// not mistaken for a directive. A real directive never carries the
 		// `--` or `..` this pattern requires.
 		if m := reClassRel.FindStringSubmatch(line); m != nil {
-			addRelation(g, getClass, m)
+			if err := addRelation(g, getClass, m); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		lower := strings.ToLower(line)
@@ -103,19 +107,29 @@ func parseClass(lines []string) (*graph, error) {
 			continue
 		}
 		if m := reClassDecl.FindStringSubmatch(line); m != nil {
-			ci := getClass(m[1])
+			ci, err := getClass(m[1])
+			if err != nil {
+				return nil, err
+			}
 			if strings.HasSuffix(line, "{") {
 				current = ci
 			}
 			continue
 		}
 		if m := reClassAnnot.FindStringSubmatch(line); m != nil && m[2] != "" {
-			ci := getClass(m[2])
+			ci, err := getClass(m[2])
+			if err != nil {
+				return nil, err
+			}
 			ci.annotations = append(ci.annotations, "<<"+m[1]+">>")
 			continue
 		}
 		if m := reClassMember.FindStringSubmatch(line); m != nil {
-			addMember(getClass(m[1]), m[2])
+			ci, err := getClass(m[1])
+			if err != nil {
+				return nil, err
+			}
+			addMember(ci, m[2])
 			continue
 		}
 	}
@@ -134,13 +148,17 @@ func parseClass(lines []string) (*graph, error) {
 
 // addRelation turns a matched relation statement into an edge, decorating each
 // end with the marker its side of the arrow calls for.
-func addRelation(g *graph, getClass func(string) *classInfo, m []string) {
-	getClass(m[1])
-	getClass(m[5])
+func addRelation(g *graph, getClass func(string) (*classInfo, error), m []string) error {
+	if _, err := getClass(m[1]); err != nil {
+		return err
+	}
+	if _, err := getClass(m[5]); err != nil {
+		return err
+	}
 	rel := m[3]
 	e := &gedge{
-		from: g.node(reGenerics.ReplaceAllString(m[1], "")),
-		to:   g.node(reGenerics.ReplaceAllString(m[5], "")),
+		from: g.index[reGenerics.ReplaceAllString(m[1], "")],
+		to:   g.index[reGenerics.ReplaceAllString(m[5], "")],
 	}
 	if strings.Contains(rel, "..") {
 		e.line = lineDotted
@@ -176,7 +194,7 @@ func addRelation(g *graph, getClass func(string) *classInfo, m []string) {
 		}
 	}
 	e.label = strings.Join(parts, " ")
-	g.addEdge(e)
+	return g.addEdge(e)
 }
 
 // displayGenerics converts mermaid generic syntax (List~T~) to List<T>.

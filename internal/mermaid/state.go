@@ -47,7 +47,9 @@ func parseState(lines []string) (*graph, error) {
 	first := true
 	inNote := false
 	var scope []stateScope
-	stNode := func(id string) *gnode {
+	var key string
+	scopeDirty := true
+	stNode := func(id string) (*gnode, error) {
 		switch id {
 		case "[*]":
 			panic("unreachable")
@@ -74,12 +76,14 @@ func parseState(lines []string) (*graph, error) {
 		case line == "}":
 			if len(scope) > 0 {
 				scope = scope[:len(scope)-1]
+				scopeDirty = true
 			}
 			continue
 		case line == "--":
 			// concurrent region divider: a new region of the same composite
 			if len(scope) > 0 {
 				scope[len(scope)-1].region++
+				scopeDirty = true
 			}
 			continue
 		case strings.HasPrefix(lower, "direction "):
@@ -98,15 +102,25 @@ func parseState(lines []string) (*graph, error) {
 			continue
 		}
 		if m := reStateAs.FindStringSubmatch(line); m != nil {
-			n := stNode(m[2])
+			n, err := stNode(m[2])
+			if err != nil {
+				return nil, err
+			}
 			n.lines = splitLabel(m[1])
 			if m[3] == "{" {
+				if len(scope) >= maxNodes {
+					return nil, limitError("state nesting", maxNodes)
+				}
 				scope = append(scope, stateScope{name: m[2]})
+				scopeDirty = true
 			}
 			continue
 		}
 		if m := reStateAnn.FindStringSubmatch(line); m != nil {
-			n := stNode(m[1])
+			n, err := stNode(m[1])
+			if err != nil {
+				return nil, err
+			}
 			switch strings.ToLower(m[2]) {
 			case "choice":
 				n.kind = boxDiamond
@@ -118,21 +132,43 @@ func parseState(lines []string) (*graph, error) {
 		}
 		if m := reStateBlock.FindStringSubmatch(line); m != nil {
 			// composite state: flatten (children parsed as ordinary states)
-			stNode(m[1])
+			if _, err := stNode(m[1]); err != nil {
+				return nil, err
+			}
+			if len(scope) >= maxNodes {
+				return nil, limitError("state nesting", maxNodes)
+			}
 			scope = append(scope, stateScope{name: m[1]})
+			scopeDirty = true
 			continue
 		}
 		if m := reStateTrans.FindStringSubmatch(line); m != nil {
-			key := scopeKey(scope)
-			from := stateEndpoint(g, m[1], true, key)
-			to := stateEndpoint(g, m[2], false, key)
-			g.addEdge(&gedge{from: from, to: to, label: strings.TrimSpace(m[3]), em: mArrow})
+			// Only pseudo-states use the scope key. Cache it until nesting or
+			// region changes so repeated transitions never recopy a long scope.
+			if scopeDirty && (m[1] == "[*]" || m[2] == "[*]") {
+				key = scopeKey(scope)
+				scopeDirty = false
+			}
+			from, err := stateEndpoint(g, m[1], true, key)
+			if err != nil {
+				return nil, err
+			}
+			to, err := stateEndpoint(g, m[2], false, key)
+			if err != nil {
+				return nil, err
+			}
+			if err := g.addEdge(&gedge{from: from, to: to, label: strings.TrimSpace(m[3]), em: mArrow}); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		if m := reStateDesc.FindStringSubmatch(line); m != nil {
-			n := stNode(m[1])
+			n, err := stNode(m[1])
+			if err != nil {
+				return nil, err
+			}
 			desc := splitLabel(m[2])
-			if n.lines[0] == n.id && len(n.lines) == 1 {
+			if len(n.lines) == 1 && n.lines[0] == n.id {
 				n.lines = desc
 			} else {
 				n.lines = append(n.lines, desc...)
@@ -140,14 +176,18 @@ func parseState(lines []string) (*graph, error) {
 			continue
 		}
 		if reIdent.MatchString(line) {
-			stNode(line)
+			if _, err := stNode(line); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		if strings.HasPrefix(lower, "state ") {
 			// e.g. `state X` without braces
 			id := strings.TrimSpace(line[len("state "):])
 			if reIdent.MatchString(id) {
-				stNode(id)
+				if _, err := stNode(id); err != nil {
+					return nil, err
+				}
 			}
 			continue
 		}
@@ -165,7 +205,7 @@ var reIdent = regexp.MustCompile(`^[\w.-]+$`)
 
 // stateEndpoint resolves `[*]` to the start or end pseudo-state of the region
 // it appears in, so nested composites do not all share one marker.
-func stateEndpoint(g *graph, id string, isSource bool, key string) *gnode {
+func stateEndpoint(g *graph, id string, isSource bool, key string) (*gnode, error) {
 	if id != "[*]" {
 		return g.node(id)
 	}
@@ -176,8 +216,11 @@ func stateEndpoint(g *graph, id string, isSource bool, key string) *gnode {
 	if key != "" {
 		base += ":" + key
 	}
-	n := g.node(base)
+	n, err := g.node(base)
+	if err != nil {
+		return nil, err
+	}
 	n.kind = boxBare
 	n.lines = []string{label}
-	return n
+	return n, nil
 }

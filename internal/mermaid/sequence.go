@@ -43,17 +43,20 @@ type seqDiagram struct {
 	title  string
 }
 
-func (d *seqDiagram) part(name string) *seqPart {
+func (d *seqDiagram) part(name string) (*seqPart, error) {
 	name = strings.TrimSpace(name)
 	name = strings.TrimLeft(name, "+-")
 	name = strings.TrimSpace(name)
 	if p, ok := d.byName[name]; ok {
-		return p
+		return p, nil
+	}
+	if len(d.parts) >= maxNodes {
+		return nil, limitError("participants", maxNodes)
 	}
 	p := &seqPart{id: name, label: name, idx: len(d.parts)}
 	d.parts = append(d.parts, p)
 	d.byName[name] = p
-	return p
+	return p, nil
 }
 
 var (
@@ -101,12 +104,17 @@ func parseSequence(lines []string) (*seqDiagram, error) {
 			if boxDepth > 0 {
 				boxDepth--
 			} else {
-				d.events = append(d.events, &seqEvent{kind: evEnd})
+				if err := d.addEvent(&seqEvent{kind: evEnd}); err != nil {
+					return nil, err
+				}
 			}
 			continue
 		}
 		if m := reSeqPart.FindStringSubmatch(line); m != nil {
-			p := d.part(m[1])
+			p, err := d.part(m[1])
+			if err != nil {
+				return nil, err
+			}
 			if m[2] != "" {
 				p.label = strings.TrimSpace(m[2])
 			}
@@ -121,25 +129,46 @@ func parseSequence(lines []string) (*seqDiagram, error) {
 				ev.side = 1
 			}
 			for _, name := range strings.Split(m[2], ",") {
-				ev.parts = append(ev.parts, d.part(name))
+				p, err := d.part(name)
+				if err != nil {
+					return nil, err
+				}
+				if len(ev.parts) >= maxNodes {
+					return nil, limitError("note participants", maxNodes)
+				}
+				ev.parts = append(ev.parts, p)
 			}
-			d.events = append(d.events, ev)
+			if err := d.addEvent(ev); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		if kind, rest, ok := seqBlockStart(line); ok {
-			d.events = append(d.events, &seqEvent{kind: evBlock, blockKind: kind, label: rest})
+			if err := d.addEvent(&seqEvent{kind: evBlock, blockKind: kind, label: rest}); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		if kind, rest, ok := seqDividerStart(line); ok {
-			d.events = append(d.events, &seqEvent{kind: evDivider, blockKind: kind, label: rest})
+			if err := d.addEvent(&seqEvent{kind: evDivider, blockKind: kind, label: rest}); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		if m := reSeqMsg.FindStringSubmatch(line); m != nil {
 			arrow := m[2]
+			from, err := d.part(m[1])
+			if err != nil {
+				return nil, err
+			}
+			to, err := d.part(m[3])
+			if err != nil {
+				return nil, err
+			}
 			ev := &seqEvent{
 				kind:  evMsg,
-				from:  d.part(m[1]),
-				to:    d.part(m[3]),
+				from:  from,
+				to:    to,
 				label: strings.TrimSpace(m[4]),
 			}
 			ev.dashed = strings.Contains(arrow, "--")
@@ -164,7 +193,9 @@ func parseSequence(lines []string) (*seqDiagram, error) {
 					ev.label = num + ". " + ev.label
 				}
 			}
-			d.events = append(d.events, ev)
+			if err := d.addEvent(ev); err != nil {
+				return nil, err
+			}
 			continue
 		}
 	}
@@ -211,4 +242,12 @@ func seqDividerStart(line string) (kind, rest string, ok bool) {
 		}
 	}
 	return "", "", false
+}
+
+func (d *seqDiagram) addEvent(ev *seqEvent) error {
+	if len(d.events) >= maxEvents {
+		return limitError("events", maxEvents)
+	}
+	d.events = append(d.events, ev)
+	return nil
 }

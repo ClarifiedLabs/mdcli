@@ -15,9 +15,29 @@ const wideCont = '\x00'
 // drawings. One cell is one display column.
 type canvas struct {
 	rows [][]rune
+	w, h int
+	err  error
 }
 
-func (c *canvas) ensure(x, y int) {
+// reserve checks the bounding rectangle before any row allocation or draw loop.
+// Errors stick: subsequent drawing becomes a no-op, and result discards the canvas.
+func (c *canvas) reserve(x, y int) bool {
+	if c.err != nil {
+		return false
+	}
+	w, h := maxInt(c.w, x+1), maxInt(c.h, y+1)
+	if err := checkCanvasSize(w, h); err != nil {
+		c.err = err
+		return false
+	}
+	c.w, c.h = w, h
+	return true
+}
+
+func (c *canvas) ensure(x, y int) bool {
+	if !c.reserve(x, y) {
+		return false
+	}
 	for len(c.rows) <= y {
 		c.rows = append(c.rows, nil)
 	}
@@ -26,6 +46,7 @@ func (c *canvas) ensure(x, y int) {
 		row = append(row, ' ')
 	}
 	c.rows[y] = row
+	return true
 }
 
 func (c *canvas) get(x, y int) rune {
@@ -40,7 +61,9 @@ func (c *canvas) put(x, y int, ch rune) {
 	if x < 0 || y < 0 {
 		return
 	}
-	c.ensure(x, y)
+	if !c.ensure(x, y) {
+		return
+	}
 	c.detach(x, y)
 	c.rows[y][x] = ch
 }
@@ -87,6 +110,9 @@ func mergeLine(old, ch rune) rune {
 // text writes a string starting at (x, y), overwriting existing cells. Each
 // rune advances x by its display width.
 func (c *canvas) text(x, y int, s string) {
+	if c.err != nil || !c.reserve(x+dispWidth(s)-1, y) {
+		return
+	}
 	for _, r := range s {
 		w := runeWidth(r)
 		if w == 0 {
@@ -104,6 +130,9 @@ func (c *canvas) hline(x1, x2, y int, ch rune) {
 	if x2 < x1 {
 		x1, x2 = x2, x1
 	}
+	if !c.reserve(x2, y) {
+		return
+	}
 	for x := x1; x <= x2; x++ {
 		c.putLine(x, y, ch)
 	}
@@ -112,6 +141,9 @@ func (c *canvas) hline(x1, x2, y int, ch rune) {
 func (c *canvas) vline(y1, y2, x int, ch rune) {
 	if y2 < y1 {
 		y1, y2 = y2, y1
+	}
+	if !c.reserve(x, y2) {
+		return
 	}
 	for y := y1; y <= y2; y++ {
 		c.putLine(x, y, ch)
@@ -123,6 +155,9 @@ func (c *canvas) vline(y1, y2, x int, ch rune) {
 func (c *canvas) dashedHline(x1, x2, y int) {
 	if x2 < x1 {
 		x1, x2 = x2, x1
+	}
+	if !c.reserve(x2, y) {
+		return
 	}
 	for x := x1; x <= x2; x++ {
 		if (x-x1)%2 == 0 {
@@ -145,11 +180,21 @@ func (c *canvas) rect(x, y, w, h int) {
 
 // clear blanks a rectangular region.
 func (c *canvas) clear(x, y, w, h int) {
+	if !c.reserve(x+w-1, y+h-1) {
+		return
+	}
 	for yy := y; yy < y+h; yy++ {
 		for xx := x; xx < x+w; xx++ {
 			c.put(xx, yy, ' ')
 		}
 	}
+}
+
+func (c *canvas) result() (string, error) {
+	if c.err != nil {
+		return "", c.err
+	}
+	return c.String(), nil
 }
 
 func (c *canvas) String() string {

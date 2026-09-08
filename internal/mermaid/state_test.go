@@ -120,6 +120,29 @@ func TestStateDescriptionsAndAnnotations(t *testing.T) {
 	}
 }
 
+// Fork and join annotations clear the label before a description is parsed.
+func TestStateForkJoinDescriptions(t *testing.T) {
+	for _, annotation := range []string{"fork", "join"} {
+		t.Run(annotation, func(t *testing.T) {
+			src := "stateDiagram-v2\nstate f <<" + annotation + ">>\nf: description"
+			g := parseSt(t, src)
+			n := g.index["f"]
+			if n == nil {
+				t.Fatal("annotated state missing")
+			}
+			if n.kind != boxBar {
+				t.Errorf("state kind = %v, want %v", n.kind, boxBar)
+			}
+			if len(n.lines) != 1 || n.lines[0] != "description" {
+				t.Errorf("description lines = %v, want [description]", n.lines)
+			}
+			if out := mustRender(t, src); !strings.Contains(out, "#########") {
+				t.Errorf("rendered state missing bar:\n%s", out)
+			}
+		})
+	}
+}
+
 func TestStateComposite(t *testing.T) {
 	g := parseSt(t, `stateDiagram-v2
     [*] --> Active

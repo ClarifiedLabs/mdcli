@@ -164,6 +164,9 @@ func renderSequence(d *seqDiagram) (string, error) {
 		}
 	}
 	footerY := y
+	if err := checkCanvasSize(width, footerY+3); err != nil {
+		return "", err
+	}
 
 	// draw
 	c := &canvas{}
@@ -238,7 +241,7 @@ func renderSequence(d *seqDiagram) (string, error) {
 			}
 		}
 	}
-	return c.String(), nil
+	return c.result()
 }
 
 func drawSeqMsg(c *canvas, ev *seqEvent) {

@@ -192,6 +192,30 @@ classDiagram
   Animal <|-- Dog
 ```
 
+### Mermaid safety limits
+
+Rendering budgets are fixed and apply **per diagram**, not per document:
+
+| Resource | Maximum |
+| --- | --- |
+| Source | 64 KiB, including comments and front matter |
+| Graph nodes or sequence participants | 256 |
+| Graph edges | 1,024, after expanding grouped links |
+| Sequence events | 1,024 messages, notes, and block delimiters |
+| Virtual layout nodes | 8,192, used to route edges across layers |
+| Canvas width or height | 4,096 columns or rows |
+| Canvas area | 1,000,000 cells, including whitespace |
+
+State start/end markers count as nodes. Node lists, note participant lists
+(including repeats), and composite-state nesting also have a 256-entry limit.
+Canvas budgets include front-matter titles. Tabs are expanded to four spaces;
+both raw and normalized source must fit the source budget.
+
+If a budget is exceeded, `md` shows the reason followed by the source code fence,
+not a partial diagram. Unsupported diagrams still fall back to source without a
+limit warning. Mermaid content is stripped of terminal control characters in
+all color modes, including titles and source fallbacks.
+
 ## Building from source
 
 ```sh

@@ -24,8 +24,12 @@ const (
 	KindClass     Kind = "class"
 )
 
-// Detect returns the diagram type declared by the source.
+// Detect returns the diagram type declared by the source, or KindUnknown if the
+// source exceeds the rendering byte budget.
 func Detect(source string) Kind {
+	if len(source) > MaxSourceBytes {
+		return KindUnknown
+	}
 	lines, _ := preprocess(source)
 	return detectLines(lines)
 }
@@ -54,8 +58,13 @@ func detectLines(lines []string) Kind {
 }
 
 // Render parses the Mermaid source, detects its diagram type and renders it
-// as ASCII art. The result always ends with a newline.
+// as ASCII art. The result always ends with a newline. Sources or diagrams that
+// exceed the fixed budgets documented in limits.go return an error, not partial
+// output.
 func Render(source string) (string, error) {
+	if len(source) > MaxSourceBytes {
+		return "", limitError("source bytes", MaxSourceBytes)
+	}
 	lines, title := preprocess(source)
 	kind := detectLines(lines)
 	var out string
@@ -65,7 +74,7 @@ func Render(source string) (string, error) {
 		var g *graph
 		g, err = parseFlowchart(lines)
 		if err == nil {
-			out = g.render()
+			out, err = g.render()
 		}
 	case KindSequence:
 		var d *seqDiagram
@@ -77,13 +86,13 @@ func Render(source string) (string, error) {
 		var g *graph
 		g, err = parseState(lines)
 		if err == nil {
-			out = g.render()
+			out, err = g.render()
 		}
 	case KindClass:
 		var g *graph
 		g, err = parseClass(lines)
 		if err == nil {
-			out = g.render()
+			out, err = g.render()
 		}
 	default:
 		return "", fmt.Errorf("mermaid: unrecognized or unsupported diagram type")
@@ -95,7 +104,10 @@ func Render(source string) (string, error) {
 		return "", fmt.Errorf("mermaid: diagram has no content")
 	}
 	if title != "" {
-		out = addTitle(title, out)
+		out, err = addTitle(title, out)
+		if err != nil {
+			return "", err
+		}
 	}
 	return out, nil
 }
@@ -136,16 +148,20 @@ func preprocess(source string) (lines []string, title string) {
 }
 
 // addTitle centers the title above the rendered diagram.
-func addTitle(title, out string) string {
+func addTitle(title, out string) (string, error) {
 	w := 0
-	for _, l := range strings.Split(out, "\n") {
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	for _, l := range lines {
 		if dispWidth(l) > w {
 			w = dispWidth(l)
 		}
+	}
+	if err := checkCanvasSize(maxInt(w, dispWidth(title)), len(lines)+2); err != nil {
+		return "", err
 	}
 	pad := (w - dispWidth(title)) / 2
 	if pad < 0 {
 		pad = 0
 	}
-	return strings.Repeat(" ", pad) + title + "\n\n" + out
+	return strings.Repeat(" ", pad) + title + "\n\n" + out, nil
 }

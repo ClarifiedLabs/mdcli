@@ -93,6 +93,9 @@ func nodeSize(n *gnode) (w, h int) {
 // drawNode renders a node's box (with its text) at the node's x, y position.
 func drawNode(c *canvas, n *gnode) {
 	x, y, w, h := n.x, n.y, n.w, n.h
+	if !c.reserve(x+w-1, y+h-1) {
+		return
+	}
 	switch n.kind {
 	case boxBare:
 		for i, l := range n.lines {

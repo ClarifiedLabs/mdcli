@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // parseFlowchart parses `flowchart` / `graph` diagrams into a graph.
@@ -116,7 +117,7 @@ func normalizeDir(s string) string {
 // parseFlowStmt parses one statement: nodes joined by links, with & lists,
 // e.g. `A[Start] --> B & C -->|ok| D`.
 func parseFlowStmt(g *graph, stmt string) error {
-	p := &flowParser{s: []rune(stmt), g: g}
+	p := &flowParser{s: stmt, g: g}
 	left, err := p.nodeList()
 	if err != nil {
 		return err
@@ -140,14 +141,20 @@ func parseFlowStmt(g *graph, stmt string) error {
 		if len(right) == 0 {
 			return fmt.Errorf("expected node after link")
 		}
+		// Check the Cartesian product before allocating even its first edge.
+		if len(left) > (maxEdges-len(g.edges))/len(right) {
+			return limitError("edges", maxEdges)
+		}
 		for _, a := range left {
 			for _, b := range right {
-				g.addEdge(&gedge{
+				if err := g.addEdge(&gedge{
 					from: a, to: b,
 					label: link.label,
 					line:  link.line,
 					sm:    link.sm, em: link.em,
-				})
+				}); err != nil {
+					return err
+				}
 			}
 		}
 		left = right
@@ -161,7 +168,7 @@ type linkTok struct {
 }
 
 type flowParser struct {
-	s []rune
+	s string
 	i int
 	g *graph
 }
@@ -178,7 +185,8 @@ func (p *flowParser) peek() rune {
 	if p.eof() {
 		return 0
 	}
-	return p.s[p.i]
+	r, _ := utf8.DecodeRuneInString(p.s[p.i:])
+	return r
 }
 
 func isWordRune(r rune) bool {
@@ -198,6 +206,9 @@ func (p *flowParser) nodeList() ([]*gnode, error) {
 		}
 		if n == nil {
 			return out, nil
+		}
+		if len(out) >= maxNodes {
+			return nil, limitError("node list entries", maxNodes)
 		}
 		out = append(out, n)
 		p.ws()
@@ -237,14 +248,15 @@ func (p *flowParser) nodeRef() (*gnode, error) {
 	p.ws()
 	start := p.i
 	for !p.eof() {
-		r := p.s[p.i]
+		r, size := utf8.DecodeRuneInString(p.s[p.i:])
 		if isWordRune(r) {
-			p.i++
+			p.i += size
 			continue
 		}
 		// allow single dashes inside ids (node-1) but not link starts (--)
-		if r == '-' && p.i+1 < len(p.s) && isWordRune(p.s[p.i+1]) && p.i > start {
-			p.i += 2
+		next, nextSize := utf8.DecodeRuneInString(p.s[p.i+1:])
+		if r == '-' && p.i+1 < len(p.s) && isWordRune(next) && p.i > start {
+			p.i += 1 + nextSize
 			continue
 		}
 		break
@@ -253,7 +265,10 @@ func (p *flowParser) nodeRef() (*gnode, error) {
 		return nil, nil
 	}
 	id := string(p.s[start:p.i])
-	n := p.g.node(id)
+	n, err := p.g.node(id)
+	if err != nil {
+		return nil, err
+	}
 	// optional shape: the longest matching opener wins, and among the shapes
 	// sharing it (`[/` starts both a parallelogram and a trapezoid) the one
 	// that closes soonest does — otherwise `[\a/] --> b[\c\]` would swallow
@@ -282,7 +297,7 @@ func (p *flowParser) nodeRef() (*gnode, error) {
 		if !best.found {
 			return nil, fmt.Errorf("unclosed %q after %q", sh.open, id)
 		}
-		p.i += len([]rune(rest[:best.consumed])) // consumed is in bytes, p.i in runes
+		p.i += best.consumed
 		n.kind = best.kind
 		n.lines = splitLabel(best.body)
 		return n, nil
@@ -337,7 +352,7 @@ func (p *flowParser) link() (linkTok, bool) {
 	isLinkChar := func(r rune) bool { return r == '-' || r == '=' || r == '.' }
 
 	// start marker
-	if !p.eof() && p.i+1 < len(p.s) && isLinkChar(p.s[p.i+1]) {
+	if !p.eof() && p.i+1 < len(p.s) && isLinkChar(rune(p.s[p.i+1])) {
 		switch p.s[p.i] {
 		case '<':
 			lt.sm = mArrow
@@ -352,7 +367,7 @@ func (p *flowParser) link() (linkTok, bool) {
 	}
 	runStart := p.i
 	hasDot, hasEq := false, false
-	for !p.eof() && isLinkChar(p.s[p.i]) {
+	for !p.eof() && isLinkChar(rune(p.s[p.i])) {
 		if p.s[p.i] == '.' {
 			hasDot = true
 		}
@@ -381,7 +396,7 @@ func (p *flowParser) link() (linkTok, bool) {
 			p.i++
 		case 'x', 'o':
 			// only a marker at a word boundary (`--x B`, not `--x1`)
-			if p.i+1 >= len(p.s) || !isWordRune(p.s[p.i+1]) {
+			if p.i+1 >= len(p.s) || !isWordRune(rune(p.s[p.i+1])) {
 				if p.s[p.i] == 'x' {
 					lt.em = mCross
 				} else {
@@ -413,7 +428,7 @@ func (p *flowParser) link() (linkTok, bool) {
 			case "o":
 				lt.em = mDiamondOpen
 			}
-			p.i += len([]rune(m[0]))
+			p.i += len(m[0])
 		}
 	}
 	// pipe label: `-->|label|`

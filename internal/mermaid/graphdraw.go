@@ -193,7 +193,7 @@ func assignRouteTracks(segs []*gseg, nGaps int, needsTrack func(*gseg) bool) (ma
 }
 
 // drawVertical renders a TD/BT layout.
-func (g *graph) drawVertical(ranks [][]*gnode) string {
+func (g *graph) drawVertical(ranks [][]*gnode) (string, error) {
 	segs := g.segments()
 	// side labels of parallel edges extend left of their line; shift the
 	// whole drawing right if one would fall off the canvas
@@ -324,7 +324,7 @@ func (g *graph) drawVertical(ranks [][]*gnode) string {
 	for _, m := range markers {
 		drawMarkerV(c, m.x, m.y, m.m, m.dir)
 	}
-	return c.String()
+	return c.result()
 }
 
 // drawSelfLoops draws a small loop on the east side of each self-edge's node.
@@ -345,7 +345,7 @@ func (g *graph) drawSelfLoops(c *canvas, labels *[]labelDraw) {
 }
 
 // drawHorizontal renders an LR/RL layout.
-func (g *graph) drawHorizontal(ranks [][]*gnode) string {
+func (g *graph) drawHorizontal(ranks [][]*gnode) (string, error) {
 	segs := g.segments()
 	nGaps := len(ranks) - 1
 	trackIdx, tracks := assignRouteTracks(segs, nGaps, func(s *gseg) bool {
@@ -485,7 +485,7 @@ func (g *graph) drawHorizontal(ranks [][]*gnode) string {
 	for _, m := range markers {
 		drawMarkerH(c, m.x, m.y, m.m, m.dir)
 	}
-	return c.String()
+	return c.result()
 }
 
 // horizOf maps a vertical line character to its horizontal counterpart.

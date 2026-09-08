@@ -5,7 +5,9 @@
 package viewer
 
 import (
+	"errors"
 	"strings"
+	"unicode"
 
 	"github.com/ClarifiedLabs/mdcli/internal/highlight"
 	"github.com/ClarifiedLabs/mdcli/internal/markdown"
@@ -29,7 +31,8 @@ type Options struct {
 
 // Render formats a complete Markdown document. Mermaid code fences are rendered
 // as ASCII diagrams; if a diagram cannot be rendered it falls back to a plain
-// indented code fence.
+// indented code fence. Resource-limit fallbacks include an explanation. Mermaid
+// content is stripped of terminal controls regardless of the ANSI option.
 func Render(text string, opts Options) string {
 	if text == "" {
 		return ""
@@ -105,20 +108,33 @@ func renderMermaidBlock(out *strings.Builder, stream *markdown.Stream, lines []s
 	// Flush any buffered markdown (e.g. a table) so it precedes the diagram.
 	out.WriteString(stream.Flush())
 
-	rendered, err := mermaid.Render(strings.Join(body, "\n"))
+	source := strings.Join(body, "\n")
+	// Keep the raw byte budget meaningful even when filtering would shrink the
+	// input. Oversized source goes straight to Render's preflight rejection.
+	if len(source) <= mermaid.MaxSourceBytes {
+		source = diagramText(strings.ReplaceAll(source, "\t", "    "))
+	}
+	rendered, err := mermaid.Render(source)
 	if err == nil {
+		// Also filter after rendering, in case label decoding introduces controls.
+		rendered = diagramText(rendered)
 		out.WriteString(rendered)
 		if !strings.HasSuffix(rendered, "\n") {
 			out.WriteByte('\n')
 		}
 	} else {
-		// Unrenderable diagram: fall back to a plain code fence.
-		out.WriteString(stream.Write(lines[start] + "\n"))
-		for _, b := range body {
-			out.WriteString(stream.Write(b + "\n"))
+		if errors.Is(err, mermaid.ErrLimitExceeded) {
+			out.WriteString("[" + diagramText(err.Error()) + "; showing source]\n")
 		}
+		// Write plain code directly: removing a control can expose a fence
+		// delimiter that must not re-enter Markdown parsing or highlighting.
+		end := j
 		if closed {
-			out.WriteString(stream.Write(lines[j] + "\n"))
+			end++
+		}
+		for _, line := range lines[start:end] {
+			line = strings.TrimRight(strings.ReplaceAll(line, "\t", "    "), " \r")
+			out.WriteString("  " + diagramText(line) + "\n")
 		}
 	}
 
@@ -126,6 +142,18 @@ func renderMermaidBlock(out *strings.Builder, stream *markdown.Stream, lines []s
 		return j
 	}
 	return len(lines)
+}
+
+// diagramText treats Mermaid content as data, never terminal commands. Newlines
+// are layout; all other control characters are removed. Normalize source tabs to
+// spaces before calling this so they remain meaningful whitespace.
+func diagramText(text string) string {
+	return strings.Map(func(r rune) rune {
+		if r != '\n' && unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, text)
 }
 
 // fenceMarker reports whether line opens a fenced code block and returns the

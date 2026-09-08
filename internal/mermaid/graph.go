@@ -65,46 +65,56 @@ func newGraph() *graph {
 
 // node returns the node with the given id, creating it (labelled with its id)
 // if it does not exist yet.
-func (g *graph) node(id string) *gnode {
+func (g *graph) node(id string) (*gnode, error) {
 	if n, ok := g.index[id]; ok {
-		return n
+		return n, nil
+	}
+	if len(g.nodes) >= maxNodes {
+		return nil, limitError("nodes", maxNodes)
 	}
 	n := &gnode{id: id, lines: []string{id}, kind: boxRect}
 	g.nodes = append(g.nodes, n)
 	g.index[id] = n
-	return n
+	return n, nil
 }
 
-func (g *graph) addEdge(e *gedge) {
+func (g *graph) addEdge(e *gedge) error {
+	if len(g.edges) >= maxEdges {
+		return limitError("edges", maxEdges)
+	}
 	if e.from == e.to {
 		e.self = true
 	}
 	g.edges = append(g.edges, e)
+	return nil
 }
 
 func (g *graph) horizontal() bool { return g.dir == "LR" || g.dir == "RL" }
 
 // render lays the graph out and draws it, returning the ASCII art.
-func (g *graph) render() string {
+func (g *graph) render() (string, error) {
 	if len(g.nodes) == 0 {
-		return ""
+		return "", nil
 	}
 	for _, n := range g.nodes {
 		n.w, n.h = nodeSize(n)
+		if err := checkCanvasSize(n.w, n.h); err != nil {
+			return "", err
+		}
 	}
 	// widen (or heighten) nodes joined by parallel edges so the offset
 	// connection points stay inside the box border
-	pairs := map[string]int{}
+	pairs := map[nodePair]int{}
 	for _, e := range g.edges {
 		if !e.self {
-			pairs[pairKey(e.from.id, e.to.id)]++
+			pairs[pairKey(e.from, e.to)]++
 		}
 	}
 	for _, e := range g.edges {
 		if e.self {
 			continue
 		}
-		if k := pairs[pairKey(e.from.id, e.to.id)]; k > 1 {
+		if k := pairs[pairKey(e.from, e.to)]; k > 1 {
 			need := 2*(k/2) + 3
 			for _, n := range []*gnode{e.from, e.to} {
 				if g.horizontal() {
@@ -130,7 +140,9 @@ func (g *graph) render() string {
 			n.rank = maxr - n.rank
 		}
 	}
-	g.insertVirtuals()
+	if err := g.insertVirtuals(); err != nil {
+		return "", err
+	}
 	ranks := g.orderRanks()
 	g.assignCross(ranks)
 	if g.horizontal() {
@@ -247,10 +259,27 @@ func lineChars(k lineKind) (horiz, vert rune) {
 
 // insertVirtuals splits edges spanning more than one rank by inserting
 // invisible pass-through nodes on the intermediate ranks.
-func (g *graph) insertVirtuals() {
-	nv := 0
+func (g *graph) insertVirtuals() error {
+	// Preflight the entire expansion; never build a partial oversized layout.
+	total := 0
 	for _, e := range g.edges {
 		if e.self {
+			continue
+		}
+		distance := e.to.rank - e.from.rank
+		if distance < 0 {
+			distance = -distance
+		}
+		if distance > 0 {
+			total += distance - 1
+		}
+		if total > maxVirtualNodes {
+			return limitError("virtual nodes", maxVirtualNodes)
+		}
+	}
+	nv := 0
+	for _, e := range g.edges {
+		if e.self || e.from.rank == e.to.rank {
 			continue
 		}
 		_, vch := lineChars(e.line)
@@ -278,6 +307,7 @@ func (g *graph) insertVirtuals() {
 		}
 		e.path = append(e.path, e.to)
 	}
+	return nil
 }
 
 // gseg is one rank-to-rank segment of an edge's path.
@@ -302,11 +332,17 @@ func edgeOffset(i int) int {
 	return k
 }
 
-func pairKey(a, b string) string {
-	if a > b {
+type nodePair struct {
+	from, to *gnode
+}
+
+func pairKey(a, b *gnode) nodePair {
+	// IDs only canonicalize the unordered pair; keys retain node identity
+	// rather than copying potentially long identifiers for every edge.
+	if a.id > b.id {
 		a, b = b, a
 	}
-	return a + "\x00" + b
+	return nodePair{from: a, to: b}
 }
 
 func (g *graph) segments() []*gseg {
@@ -327,18 +363,18 @@ func (g *graph) segments() []*gseg {
 		}
 	}
 	// separate parallel edges between the same pair of real nodes
-	cnt := map[string]int{}
-	total := map[string]int{}
+	cnt := map[nodePair]int{}
+	total := map[nodePair]int{}
 	for _, s := range out {
 		if !s.u.virtual && !s.w.virtual {
-			total[pairKey(s.u.id, s.w.id)]++
+			total[pairKey(s.u, s.w)]++
 		}
 	}
 	for _, s := range out {
 		if s.u.virtual || s.w.virtual {
 			continue
 		}
-		k := pairKey(s.u.id, s.w.id)
+		k := pairKey(s.u, s.w)
 		if total[k] > 1 {
 			s.off = edgeOffset(cnt[k])
 			s.parallel = true
