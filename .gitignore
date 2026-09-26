@@ -6,6 +6,8 @@
 
 # Release artifacts
 /dist
+*.deb
+*.rpm
 
 # OS
 .DS_Store

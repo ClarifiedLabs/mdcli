@@ -40,10 +40,11 @@ It publishes tarballs, `.deb` and `.rpm` packages, a signed and notarized macOS
 `.pkg` for Apple silicon, Homebrew bottles for macOS arm64, macOS Intel, Linux
 amd64, and Linux arm64, SHA-256 checksums, and GitHub artifact attestations.
 The workflow then updates `ClarifiedLabs/homebrew-tap` through a GitHub App
-installation token. After publishing the release assets it also updates the
-generated release-artifact block in `README.md` on the default branch and
-commits the versioned package links. Rerunning an older release does not
-replace links for a newer latest release.
+installation token, and adds the Linux packages to the org-wide package
+repositories in `ClarifiedLabs/linux-packages`. After publishing the release
+assets it also updates the generated release-artifact block in `README.md` on
+the default branch and commits the versioned package links. Rerunning an older
+release does not replace links for a newer latest release.
 
 Asset names for version `vX.Y.Z`:
 
@@ -59,6 +60,34 @@ The tap repository must already exist with an initialized default branch. No
 formula file is required ahead of time; the release workflow writes
 `Formula/md.rb` and merges the generated bottle metadata.
 
+### Linux package repositories
+
+After the GitHub release is published, `packages-publish` adds the `md` `.deb`
+and `.rpm` packages to the shared Clarified Labs repositories hosted in
+[`ClarifiedLabs/linux-packages`](https://github.com/ClarifiedLabs/linux-packages)
+and served by GitHub Pages at
+`https://clarifiedlabs.github.io/linux-packages`:
+
+- The APT repository (reprepro, `stable`/`main`, amd64 and arm64) files `md`
+under `deb/pool/main/m/md/` automatically; no distributions change is needed.
+- The RPM repository (createrepo_c) serves `rpm/x86_64/md-*.rpm` and
+`rpm/aarch64/md-*.rpm`.
+
+The repositories are org-wide: the same signing key (`Clarified Labs, Inc.
+Packages <hello@clarified.io>`, published as
+`clarifiedlabs-archive-keyring.asc`), the same GitHub App, and the same update
+scripts serve `harness` and `md` packages, so both products install side by
+side from one repository entry (`clarifiedlabs.list` / `clarifiedlabs.repo`).
+The update scripts live in `ClarifiedLabs/linux-packages`
+(`scripts/apt-repo-update.sh`, `scripts/rpm-repo-update.sh`); this workflow
+checks that repository out and runs them from there. Versions are independent
+per product, so `md` and `harness` releases never collide.
+
+RPM payload signing happens here, in `build-linux`, before attestation and
+upload: the GitHub release assets, `checksums.txt`, attestations, and the
+package repositories all serve identical signed files. RPMs are signed on
+every run, including dry runs.
+
 ## CI Dry Runs
 
 Push a branch named `release-ci` or under `release-ci/`, or run the `release`
@@ -68,11 +97,27 @@ source. They build and upload the normal workflow artifacts, generate
 checksums, build Homebrew bottles from a local tap, and dry-run the Homebrew
 formula merge.
 
-Dry runs do not publish a GitHub release, push to the Homebrew tap, or create
-artifact attestations. The macOS `.pkg` is built unsigned in dry runs so Apple
-Developer ID and notarization secrets are only required for real `v*` tag
-releases. They render the README release-artifact block with `v0.0.0` and show
-its diff without committing it.
+Dry runs do not publish a GitHub release, push to the Homebrew tap, push to
+the package repositories, or create artifact attestations. The macOS `.pkg`
+is built unsigned in dry runs so Apple Developer ID and notarization secrets
+are only required for real `v*` tag releases. They render the README
+release-artifact block with `v0.0.0` and show its diff without committing it.
+
+The `packages-publish-dry-run` job exercises the package repository pipeline
+end to end with the production key: `build-linux` signs the dry-run RPMs with
+`PACKAGES_GPG_PRIVATE_KEY`, the job verifies them with `rpm -K` against the
+published `clarifiedlabs-archive-keyring.asc`, then builds scratch APT and RPM
+repositories with the same update scripts from the `linux-packages` checkout
+and verifies the `InRelease` and `repomd.xml` signatures and the expected `md`
+entries for both architectures. Nothing is pushed.
+
+The dry run also mints a GitHub App token with the same inputs as the real
+`packages-publish` job and immediately discards it. Together with the GPG
+import/sign/verify steps this validates all three package secrets —
+`PACKAGES_GPG_PRIVATE_KEY`, `PACKAGES_APP_PRIVATE_KEY`, and
+`PACKAGES_APP_CLIENT_ID` — on every `release-ci` run, so a typo'd or missing
+secret fails fast instead of at the first tag. The token is never used to push
+anything.
 
 ## Required Secrets
 
@@ -102,6 +147,16 @@ its diff without committing it.
 - `HOMEBREW_TAP_APP_PRIVATE_KEY`: private key for the GitHub App installed on
   `ClarifiedLabs/homebrew-tap`.
 - `HOMEBREW_TAP_APP_CLIENT_ID`: the GitHub App Client ID.
+- `PACKAGES_GPG_PRIVATE_KEY`: ASCII-armored private half of the org-wide
+  `Clarified Labs, Inc. Packages <hello@clarified.io>` GPG key — the same key
+  `ClarifiedLabs/harness` uses. Signs the RPM packages and (on publish) the
+  APT `InRelease`/`Release` metadata and `repomd.xml` in
+  `ClarifiedLabs/linux-packages`.
+- `PACKAGES_APP_PRIVATE_KEY`: private key for the GitHub App installed on
+  `ClarifiedLabs/linux-packages` — the same App `ClarifiedLabs/harness` uses.
+- `PACKAGES_APP_CLIENT_ID`: that GitHub App's Client ID.
 
-The GitHub App only needs to be installed on `ClarifiedLabs/homebrew-tap` with
-repository Contents read/write permission.
+The Homebrew App only needs to be installed on `ClarifiedLabs/homebrew-tap`
+with repository Contents read/write permission; the packages App only needs to
+be installed on `ClarifiedLabs/linux-packages` with repository Contents
+read/write permission.

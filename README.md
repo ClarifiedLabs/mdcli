@@ -72,7 +72,23 @@ Or download the latest release, v0.0.4, directly:
 
 ### Linux
 
-v0.0.4 is available for amd64/x86_64 and arm64/aarch64:
+v0.0.4 is available for amd64/x86_64 and arm64/aarch64.
+
+Install from the shared Clarified Labs package repositories:
+
+```sh
+curl -fsSL https://clarifiedlabs.github.io/linux-packages/clarifiedlabs-archive-keyring.asc | sudo gpg --dearmor -o /usr/share/keyrings/clarifiedlabs-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/clarifiedlabs-archive-keyring.gpg] https://clarifiedlabs.github.io/linux-packages/deb stable main" | sudo tee /etc/apt/sources.list.d/clarifiedlabs.list
+sudo apt-get update
+sudo apt-get install md
+```
+
+```sh
+sudo curl -fsSL -o /etc/yum.repos.d/clarifiedlabs.repo https://clarifiedlabs.github.io/linux-packages/clarifiedlabs.repo
+sudo dnf install md
+```
+
+Or download the release assets directly:
 
 | Format | amd64 / x86_64 | arm64 / aarch64 |
 |---|---|---|
