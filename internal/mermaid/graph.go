@@ -53,10 +53,11 @@ type gedge struct {
 }
 
 type graph struct {
-	dir   string // TD, BT, LR, RL
-	nodes []*gnode
-	index map[string]*gnode
-	edges []*gedge
+	maxVirtualNodes int    // per-render optional lower cap
+	dir             string // TD, BT, LR, RL
+	nodes           []*gnode
+	index           map[string]*gnode
+	edges           []*gedge
 
 	// Drawing metadata is consumed only by responsive flowchart selection.
 	labelOverlap bool
@@ -265,6 +266,10 @@ func lineChars(k lineKind) (horiz, vert rune) {
 // invisible pass-through nodes on the intermediate ranks.
 func (g *graph) insertVirtuals() error {
 	// Preflight the entire expansion; never build a partial oversized layout.
+	limit := g.maxVirtualNodes
+	if limit <= 0 || limit > maxVirtualNodes {
+		limit = maxVirtualNodes
+	}
 	total := 0
 	for _, e := range g.edges {
 		if e.self {
@@ -277,8 +282,8 @@ func (g *graph) insertVirtuals() error {
 		if distance > 0 {
 			total += distance - 1
 		}
-		if total > maxVirtualNodes {
-			return limitError("virtual nodes", maxVirtualNodes)
+		if total > limit {
+			return limitError("virtual nodes", limit)
 		}
 	}
 	nv := 0

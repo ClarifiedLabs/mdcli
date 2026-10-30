@@ -105,6 +105,32 @@ Every asset is listed with its SHA-256 in
 go install github.com/ClarifiedLabs/mdcli/cmd/md@latest
 ```
 
+## Use as a Go library
+
+The same streaming renderer and syntax/diff highlighter are available as public,
+standard-library-only packages (Go 1.26+):
+
+```sh
+go get github.com/ClarifiedLabs/mdcli
+```
+
+```go
+import (
+    "github.com/ClarifiedLabs/mdcli/markdown"
+    "github.com/ClarifiedLabs/mdcli/highlight"
+)
+
+rendered := markdown.Render(input, markdown.Options{
+    Enabled: true, ANSI: true, ColorTheme: highlight.ThemeDark, Width: 80,
+})
+```
+
+Use `markdown.NewStream` for incremental model output, or `highlight.NewWithTheme`
+and `highlight.ColorizeDiffWithTheme` for source code and unified diffs. The
+library never detects TTYs or enables color on its own. See the
+[library reference](docs/library.md) for streaming boundaries, themes, and
+per-render Mermaid budgets.
+
 ## Usage
 
 ```
@@ -261,7 +287,9 @@ both raw and normalized source must fit the source budget.
 If a budget is exceeded, `md` shows the reason followed by the source code fence,
 not a partial diagram. Unsupported diagrams still fall back to source without a
 limit warning. Mermaid content is stripped of terminal control characters in
-all color modes, including titles and source fallbacks.
+all color modes, including titles and source fallbacks. Bidirectional formatting
+controls are also removed so labels cannot reorder node IDs or arrows.
+Multiline labels in flowchart lists keep continuation indentation.
 
 ## Building from source
 

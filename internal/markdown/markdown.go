@@ -83,10 +83,18 @@ type Options struct {
 	// ColorTheme selects syntax colors when ANSI is enabled. Its zero value is dark.
 	ColorTheme highlight.Theme
 	// Width enables visible-width wrapping for paragraphs, list item bodies, and
-	// tables when positive.
+	// tables when positive. Flowcharts adapt to this width (less Prefix), using
+	// DefaultWidth when nonpositive; other diagram kinds keep their natural width.
 	Width int
 	// Prefix is prepended to each non-empty rendered line.
 	Prefix string
+	// MermaidMaxVirtualNodes caps layout expansion; nonpositive uses the hard maximum (8192).
+	MermaidMaxVirtualNodes int
+	// MermaidLimitNotice enables the CLI compatibility policy: explain resource
+	// limits and budget raw and normalized untrimmed source separately, without
+	// the final body newline.
+	// Public streams retain the established incremental byte/newline accounting.
+	MermaidLimitNotice bool
 }
 
 // Render formats a complete text block.
@@ -99,14 +107,19 @@ func Render(text string, opts Options) string {
 }
 
 // Stream renders Markdown from incremental text deltas. Complete lines are
-// emitted as soon as possible; tables are buffered until the table block ends so
-// column widths can be calculated.
+// emitted as soon as possible; tables and Mermaid fences are buffered until the
+// block ends so their layout can be calculated.
 type Stream struct {
-	opts        Options
-	pending     string
-	table       []tableLine
-	inFence     bool
-	fenceMarker string
+	opts            Options
+	pending         string
+	table           []tableLine
+	inFence         bool
+	fenceMarker     string
+	diagram         []fenceLine // opening delimiter and body of a buffered Mermaid fence
+	diagramFallback bool        // remaining source after an unclosed Mermaid flush
+	diagramBytes    int
+	diagramRawBytes int  // CLI-only source cap before tab expansion/control filtering
+	diagramPartial  bool // a fallback source line has already emitted a fragment
 	// code highlights the body of the open fence. It is nil for an unlabeled
 	// fence, an unrecognized language, or when ANSI is off, and a nil
 	// highlighter leaves lines untouched.
@@ -136,25 +149,28 @@ func (s *Stream) Write(text string) string {
 		if i < 0 {
 			break
 		}
-		line := strings.TrimSuffix(s.pending[:i], "\r")
+		line := s.pending[:i]
 		s.pending = s.pending[i+1:]
 		s.renderLine(&out, line, true)
 	}
+	s.flushMermaidPending(&out)
 	return out.String()
 }
 
-// Flush renders any buffered incomplete line or pending table block.
+// Flush renders any buffered incomplete line, table, or unclosed Mermaid fence.
+// It finalizes buffered blocks at a display boundary, not just at EOF.
 func (s *Stream) Flush() string {
 	if !s.opts.Enabled {
 		return ""
 	}
 	var out strings.Builder
 	if s.pending != "" {
-		line := strings.TrimSuffix(s.pending, "\r")
+		line := s.pending
 		s.pending = ""
 		s.renderLine(&out, line, false)
 	}
 	s.flushTable(&out)
+	s.flushMermaid(&out, false)
 	return out.String()
 }
 
@@ -166,9 +182,15 @@ func (s *Stream) LineOpen() bool {
 
 // AtLineBoundary reports whether external scrolling output can be inserted
 // without flushing buffered source or splitting a physical output line. A
-// complete buffered table/fence line remains a safe boundary.
+// complete buffered table or Mermaid source line remains a safe boundary.
 func (s *Stream) AtLineBoundary() bool {
 	return s.pending == "" && !s.lineOpen
+}
+
+// HasBufferedBlock reports whether a table or Mermaid fence is buffered. Callers
+// repainting transient status lines must not Flush and split these layouts.
+func (s *Stream) HasBufferedBlock() bool {
+	return len(s.table) > 0 || s.diagram != nil
 }
 
 // CloseLine tells the stream that the caller wrote an external newline after an
@@ -178,19 +200,44 @@ func (s *Stream) CloseLine() {
 }
 
 func (s *Stream) renderLine(out *strings.Builder, line string, newline bool) {
-	line = strings.TrimRight(strings.ReplaceAll(line, "\t", "    "), " \r")
+	rawBytes := len(line)
+	line = strings.TrimSuffix(line, "\r")
+	line = strings.ReplaceAll(line, "\t", "    ")
+	if s.diagram != nil && s.opts.MermaidLimitNotice {
+		s.bufferMermaidLine(out, line, newline, rawBytes)
+		return
+	}
+	line = strings.TrimRight(line, " \r")
 
 	if s.inFence {
+		if s.diagram != nil {
+			s.bufferMermaidLine(out, line, newline, rawBytes)
+			return
+		}
 		s.flushTable(out)
+		// Filtering controls can expose a delimiter that was not in the source.
+		closed := strings.HasPrefix(strings.TrimSpace(line), s.fenceMarker)
+		if s.diagramFallback {
+			if s.diagramPartial {
+				s.writeMermaidPartial(out, line, newline)
+				return
+			}
+			line = diagramText(line)
+		}
 		// The closing delimiter is not code, so it is written unstyled.
-		if strings.HasPrefix(strings.TrimSpace(line), s.fenceMarker) {
+		if closed {
 			s.inFence = false
 			s.fenceMarker = ""
 			s.code = nil
+			s.diagramFallback = false
+			s.diagramPartial = false
 			s.writeLine(out, s.opts.Prefix+"  "+line, newline)
 			return
 		}
 		s.writeLine(out, s.opts.Prefix+"  "+s.code.Line(line), newline)
+		if s.diagramFallback {
+			s.diagramPartial = !newline
+		}
 		return
 	}
 
@@ -198,6 +245,10 @@ func (s *Stream) renderLine(out *strings.Builder, line string, newline bool) {
 		s.flushTable(out)
 		s.inFence = true
 		s.fenceMarker = marker
+		if strings.EqualFold(info, "mermaid") {
+			s.diagram = []fenceLine{{text: line, newline: newline}}
+			return
+		}
 		if s.opts.ANSI {
 			s.code = highlight.NewWithTheme(info, s.opts.ColorTheme)
 		}

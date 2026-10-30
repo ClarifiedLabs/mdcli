@@ -11,7 +11,7 @@ import (
 // shrink labels to single-letter boxes or wrap completed diagram art.
 const minFlowchartWidth = 20
 
-func renderResponsiveFlowchart(lines []string, title string, width int) (string, error) {
+func renderResponsiveFlowchart(lines []string, title string, width int, virtualBudget int) (string, error) {
 	pristine, err := parseFlowchart(lines)
 	if err != nil {
 		return "", err
@@ -37,6 +37,7 @@ func renderResponsiveFlowchart(lines []string, title string, width int) (string,
 			if err != nil {
 				return "", err
 			}
+			g.maxVirtualNodes = virtualBudget
 			g.dir = dir
 			var key strings.Builder
 			for _, n := range g.nodes {
@@ -191,17 +192,40 @@ func (w *listWriter) text(text string) {
 	}
 }
 
+// item indents explicit and wrapped continuation lines so label text cannot
+// masquerade as another node, connection, or section header. Reserve at least
+// one content column on tiny displays, where indentation may be impossible.
+func (w *listWriter) item(text string) {
+	if w.err != nil {
+		return
+	}
+	prefix := ""
+	if w.width >= minFlowchartWidth {
+		prefix = "- "
+	}
+	continuation := strings.Repeat(" ", min(2, w.width-1))
+	for i, line := range wrapFlowText(text, w.width-len(continuation)) {
+		if i > 0 {
+			prefix = continuation
+		}
+		if line == "" {
+			w.text("")
+		} else {
+			w.text(prefix + line)
+		}
+		if w.err != nil {
+			return
+		}
+	}
+}
+
 func renderFlowList(g *graph, title string, width int) (string, error) {
 	w := &listWriter{width: min(width, maxCanvasDimension)}
 	w.text("Flowchart shown as a list to fit the display.")
 	w.text("")
 	w.text("Nodes:")
-	prefix := "- "
-	if width < minFlowchartWidth {
-		prefix = ""
-	}
 	for _, n := range g.nodes {
-		w.text(prefix + n.id + ": " + strings.Join(n.lines, "\n"))
+		w.item(n.id + ": " + strings.Join(n.lines, "\n"))
 		if w.err != nil {
 			return "", w.err
 		}
@@ -212,11 +236,11 @@ func renderFlowList(g *graph, title string, width int) (string, error) {
 		if e.line == lineNone {
 			continue
 		}
-		text := prefix + e.from.id + " " + flowEdgeToken(e) + " " + e.to.id
+		text := e.from.id + " " + flowEdgeToken(e) + " " + e.to.id
 		if e.label != "" {
 			text += ": " + e.label
 		}
-		w.text(text)
+		w.item(text)
 		if w.err != nil {
 			return "", w.err
 		}

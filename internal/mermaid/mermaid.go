@@ -57,12 +57,19 @@ func detectLines(lines []string) Kind {
 	return KindUnknown
 }
 
+// DisplayWidth measures unstyled text in the renderer's terminal-column model.
+// Strip ANSI styling before measuring prefixes.
+func DisplayWidth(text string) int { return dispWidth(text) }
+
 // Options controls diagram rendering.
 type Options struct {
 	// Width is the available terminal columns; it must be positive for flowcharts.
 	// Node labels may wrap, horizontal layouts may rotate, and complex diagrams
 	// may become a Nodes / Connections list. Other diagram kinds ignore Width.
 	Width int
+	// MaxVirtualNodes optionally lowers the fixed 8192-node layout budget.
+	// Nonpositive values use the hard maximum.
+	MaxVirtualNodes int
 }
 
 // Render parses Mermaid and renders ASCII art, adapting flowcharts to Width.
@@ -81,7 +88,7 @@ func Render(source string, opts Options) (string, error) {
 		if opts.Width <= 0 {
 			return "", fmt.Errorf("mermaid: flowchart width must be positive")
 		}
-		return renderResponsiveFlowchart(lines, title, opts.Width)
+		return renderResponsiveFlowchart(lines, title, opts.Width, opts.MaxVirtualNodes)
 	case KindSequence:
 		var d *seqDiagram
 		d, err = parseSequence(lines)
@@ -92,12 +99,14 @@ func Render(source string, opts Options) (string, error) {
 		var g *graph
 		g, err = parseState(lines)
 		if err == nil {
+			g.maxVirtualNodes = opts.MaxVirtualNodes
 			out, err = g.render()
 		}
 	case KindClass:
 		var g *graph
 		g, err = parseClass(lines)
 		if err == nil {
+			g.maxVirtualNodes = opts.MaxVirtualNodes
 			out, err = g.render()
 		}
 	default:
