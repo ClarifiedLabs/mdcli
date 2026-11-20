@@ -1,6 +1,7 @@
 package mdcli_test
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -186,5 +187,88 @@ func TestReadmeLinksMatchWorkflowArtifacts(t *testing.T) {
 		if !strings.Contains(workflow, "dist/"+pattern) {
 			t.Errorf("README links %s but the workflow never verifies dist/%s", asset, pattern)
 		}
+	}
+}
+
+// The merge writes an entire bottle block, so splitting the JSON files
+// across invocations loses earlier platform entries. Exercise the shared
+// publisher with a stub that rejects anything but one complete invocation.
+func TestMergeHomebrewBottles(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq is required by the Homebrew publisher")
+	}
+	for _, mode := range []string{"complete", "missing-input", "duplicate-input", "lost-platform", "wrong-digest"} {
+		t.Run(mode, func(t *testing.T) {
+			tmp := t.TempDir()
+			bottles, tap := filepath.Join(tmp, "metadata files"), filepath.Join(tmp, "tap")
+			for _, dir := range []string{bottles, filepath.Join(tap, "Formula")} {
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			write := func(path, data string, perm os.FileMode) {
+				t.Helper()
+				if err := os.WriteFile(path, []byte(data), perm); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			tags := []string{"arm64_linux", "arm64_tahoe", "tahoe", "x86_64_linux"}
+			rows := []string{"  bottle do"}
+			for i, tag := range tags {
+				sum := strings.Repeat(string(rune('a'+i)), 64)
+				inputTag := tag
+				if mode == "duplicate-input" && i == 1 {
+					inputTag = tags[0]
+				}
+				if mode != "missing-input" || i != 0 {
+					write(filepath.Join(bottles, tag+".json"),
+						fmt.Sprintf(`{"clarifiedlabs/tap/md":{"bottle":{"tags":{"%s":{"sha256":"%s"}}}}}`, inputTag, sum), 0o644)
+				}
+				if mode == "lost-platform" && i == 0 {
+					continue
+				}
+				if mode == "wrong-digest" && i == 0 {
+					sum = strings.Repeat("0", 64)
+				}
+				rows = append(rows, fmt.Sprintf("    sha256 cellar: :any_skip_relocation, %s: %q", tag, sum))
+			}
+			rows = append(rows, "  end", "")
+			write(filepath.Join(tmp, "expected.rb"), strings.Join(rows, "\n"), 0o644)
+			write(filepath.Join(tmp, "brew"), `#!/usr/bin/env bash
+set -euo pipefail
+[[ "$PWD" == "$TAP_DIR" && "$#" -eq 8 && "$1 $2 $3 $4" == "bottle --merge --write --no-commit" ]]
+touch "$TEST_DIR/called-brew"
+cp "$TEST_DIR/expected.rb" Formula/md.rb
+`, 0o755)
+			cmd := exec.Command("scripts/release/merge-homebrew-bottles.sh", bottles)
+			cmd.Env = append(os.Environ(), "TAP_DIR="+tap, "TEST_DIR="+tmp, "PATH="+tmp+":"+os.Getenv("PATH"))
+			out, err := cmd.CombinedOutput()
+			switch mode {
+			case "complete":
+				if err != nil {
+					t.Fatalf("merge failed: %v\n%s", err, out)
+				}
+			case "missing-input", "duplicate-input":
+				if err == nil || !strings.Contains(string(out), "each expected platform exactly once") {
+					t.Fatalf("want input coverage failure, got %v\n%s", err, out)
+				}
+				if _, err := os.Stat(filepath.Join(tmp, "called-brew")); !os.IsNotExist(err) {
+					t.Fatalf("brew should not run on incomplete inputs, stat error: %v", err)
+				}
+			default:
+				if err == nil || !strings.Contains(string(out), "does not match the expected platform checksums") {
+					t.Fatalf("want output verification failure, got %v\n%s", err, out)
+				}
+			}
+		})
+	}
+}
+
+func TestReleaseWorkflowSharesHomebrewBottleMerge(t *testing.T) {
+	workflow := readFile(t, releaseWorkflow)
+	const call = `scripts/release/merge-homebrew-bottles.sh "${GITHUB_WORKSPACE}/bottles"`
+	if got := strings.Count(workflow, call); got != 2 {
+		t.Fatalf("release and dry run must both invoke the shared bottle merge; got %d calls", got)
 	}
 }
