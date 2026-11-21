@@ -292,6 +292,9 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Stage Homebrew bottle download names
+        run: scripts/release/stage-homebrew-bottles.sh dist
+
       - name: Generate checksums
         run: scripts/release/checksums.sh
 
@@ -380,6 +383,9 @@ jobs:
           pattern: homebrew-bottle-*
           path: dist
           merge-multiple: true
+
+      - name: Stage Homebrew bottle download names
+        run: scripts/release/stage-homebrew-bottles.sh dist
 
       - name: Generate checksums
         run: scripts/release/checksums.sh
@@ -530,6 +536,14 @@ jobs:
           SOURCE_SHA256="$(shasum -a 256 "${RUNNER_TEMP}/source.tar.gz" | awk '{print $1}')"
           SOURCE_URL="$SOURCE_URL" SOURCE_SHA256="$SOURCE_SHA256" scripts/release/homebrew-formula.sh
           scripts/release/merge-homebrew-bottles.sh "${GITHUB_WORKSPACE}/bottles"
+
+      - name: Verify public Homebrew bottle URLs
+        env:
+          TAG: ${{ env.RELEASE_VERSION }}
+        run: |
+          source/scripts/release/stage-homebrew-bottles.sh --verify-published \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}" \
+            "${GITHUB_WORKSPACE}/bottles"
 
       - name: Commit tap update
         env:

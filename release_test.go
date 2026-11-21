@@ -1,6 +1,7 @@
 package mdcli_test
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"os/exec"
@@ -270,5 +271,140 @@ func TestReleaseWorkflowSharesHomebrewBottleMerge(t *testing.T) {
 	const call = `scripts/release/merge-homebrew-bottles.sh "${GITHUB_WORKSPACE}/bottles"`
 	if got := strings.Count(workflow, call); got != 2 {
 		t.Fatalf("release and dry run must both invoke the shared bottle merge; got %d calls", got)
+	}
+}
+
+func TestStageHomebrewBottleDownloadNames(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq is required by the release workflow")
+	}
+	if _, err := exec.LookPath("sha256sum"); err != nil {
+		t.Skip("sha256sum is required by the Linux release runner")
+	}
+	for _, mode := range []string{"complete", "missing", "wrong-digest", "occupied", "unsafe-name"} {
+		t.Run(mode, func(t *testing.T) {
+			dist := t.TempDir()
+			write := func(file, contents string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(dist, file), []byte(contents), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			const first = "md--0.0.7.arm64_linux.bottle.tar.gz"
+			for i, platform := range []string{"arm64_linux", "arm64_tahoe", "tahoe", "x86_64_linux"} {
+				local := fmt.Sprintf("md--0.0.7.%s.bottle.tar.gz", platform)
+				published := fmt.Sprintf("md-0.0.7.%s.bottle.tar.gz", platform)
+				data := "fixture archive " + platform
+				digest := fmt.Sprintf("%x", sha256.Sum256([]byte(data)))
+				if mode == "wrong-digest" && i == 1 {
+					digest = strings.Repeat("0", 64)
+				}
+				if mode == "occupied" && i == 1 {
+					write(published, "retain this output")
+				}
+				if mode == "unsafe-name" && i == 1 {
+					published = "../" + published
+				}
+				if mode != "missing" || i != 1 {
+					write(local, data)
+				}
+				write(platform+".bottle.json", fmt.Sprintf(`{"clarifiedlabs/tap/md":{"bottle":{"tags":{"%s":{"filename":%q,"local_filename":%q,"sha256":%q}}}}}`, platform, published, local, digest))
+			}
+
+			out, err := exec.Command("scripts/release/stage-homebrew-bottles.sh", dist).CombinedOutput()
+			wantErr := map[string]string{
+				"missing": "missing input", "wrong-digest": "SHA-256 mismatch",
+				"occupied": "occupied output", "unsafe-name": "invalid md bottle filename",
+			}[mode]
+			if wantErr != "" {
+				if err == nil || !strings.Contains(string(out), wantErr) {
+					t.Fatalf("want %q, got %v\n%s", wantErr, err, out)
+				}
+				if _, err := os.Stat(filepath.Join(dist, first)); err != nil {
+					t.Fatalf("preflight should leave all files unrenamed on failure: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("stage bottles: %v\n%s", err, out)
+			}
+			cmd := exec.Command("scripts/release/checksums.sh")
+			cmd.Env = append(os.Environ(), "DIST_DIR="+dist)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("checksum staged files: %v\n%s", err, out)
+			}
+			sums := readFile(t, filepath.Join(dist, "checksums.txt"))
+			for _, platform := range []string{"arm64_linux", "arm64_tahoe", "tahoe", "x86_64_linux"} {
+				published := fmt.Sprintf("md-0.0.7.%s.bottle.tar.gz", platform)
+				if want := "fixture archive " + platform; readFile(t, filepath.Join(dist, published)) != want {
+					t.Fatalf("staged archive bytes differ for %s", published)
+				}
+				if !strings.Contains(sums, "  "+published+"\n") {
+					t.Fatalf("staged archive missing from checksums: %s", published)
+				}
+				if _, err := os.Stat(filepath.Join(dist, platform+".bottle.json")); err != nil {
+					t.Fatalf("metadata should be retained: %v", err)
+				}
+			}
+			if strings.Contains(sums, "md--") {
+				t.Fatalf("checksums include a local-only archive name: %s", sums)
+			}
+		})
+	}
+}
+
+func TestReleaseWorkflowStagesDownloadNamesBeforeChecksums(t *testing.T) {
+	workflow := readFile(t, releaseWorkflow)
+	const steps = `run: scripts/release/stage-homebrew-bottles.sh dist
+
+      - name: Generate checksums
+        run: scripts/release/checksums.sh`
+	if got := strings.Count(workflow, steps); got != 2 {
+		t.Fatalf("release and dry run must both stage bottle filenames before generating checksums; got %d", got)
+	}
+}
+
+func TestVerifyPublishedHomebrewBottleURLs(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq is required by the release workflow")
+	}
+	for _, blocked := range []string{"", "tahoe"} {
+		t.Run("blocked="+blocked, func(t *testing.T) {
+			tmp := t.TempDir()
+			write := func(name, data string, mode os.FileMode) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(tmp, name), []byte(data), mode); err != nil {
+					t.Fatal(err)
+				}
+			}
+			root := "https://github.com/ClarifiedLabs/mdcli/releases/download/v0.0.7"
+			var wanted []string
+			stopped := false
+			for _, p := range []string{"arm64_linux", "arm64_tahoe", "tahoe", "x86_64_linux"} {
+				name := fmt.Sprintf("md-0.0.7.%s.bottle.tar.gz", p)
+				local := fmt.Sprintf("md--0.0.7.%s.bottle.tar.gz", p)
+				write(p+".bottle.json", fmt.Sprintf(`{"md":{"bottle":{"tags":{"%s":{"filename":%q,"local_filename":%q,"sha256":%q}}}}}`, p, name, local, strings.Repeat("a", 64)), 0o644)
+				if !stopped {
+					wanted = append(wanted, root+"/"+name)
+				}
+				stopped = stopped || blocked == p
+			}
+			write("curl", `#!/usr/bin/env bash
+set -euo pipefail
+url="${@: -1}"
+printf '%s\n' "$url" >>"$CURL_LOG"
+[[ -z "$BLOCKED" || "$url" != *."$BLOCKED".bottle.tar.gz ]]
+`, 0o755)
+			log := filepath.Join(tmp, "curl.log")
+			cmd := exec.Command("scripts/release/stage-homebrew-bottles.sh", "--verify-published", root, tmp)
+			cmd.Env = append(os.Environ(), "PATH="+tmp+":"+os.Getenv("PATH"), "CURL_LOG="+log, "BLOCKED="+blocked)
+			out, err := cmd.CombinedOutput()
+			if (err != nil) != (blocked != "") {
+				t.Fatalf("unexpected public URL check result: %v\n%s", err, out)
+			}
+			if got := strings.Fields(readFile(t, log)); strings.Join(got, "\n") != strings.Join(wanted, "\n") {
+				t.Fatalf("public URL checks: got %v, want %v", got, wanted)
+			}
+		})
 	}
 }
